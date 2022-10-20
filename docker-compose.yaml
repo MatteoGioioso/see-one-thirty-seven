@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgresql:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    ports:
+      - "5432:5432"
+    environment:
+      PGPASSWORD: admin
+      PGUSER: postgres
+      SEEONE_ROLE: master
+      SEEONE_MASTER_HOST: postgresql
+      PGREPLICATION_USER_PASSWORD: replicator
+
+  postgresql2:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    ports:
+      - "5001:5432"
+    environment:
+      PGPASSWORD: admin
+      PGUSER: postgres
+      SEEONE_ROLE: replica
+      SEEONE_MASTER_HOST: postgresql
+      PGREPLICATION_USER_PASSWORD: replicator
+
+#  pgbench:
+#    build:
+#      dockerfile: pgbench.Dockerfile
+#      context: ../bench
+#    restart: always # Run continuously
+#    environment:
+#      - PGHOST_1=postgresql
+#      - PGHOST_2=postgresql2
+#      - PGUSER=postgres
+#      - PGPASSWORD=admin
+#      - PGDATABASE=postgres
+#    depends_on:
+#      - postgresql
