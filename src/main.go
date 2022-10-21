@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/logger"
+	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/avast/retry-go"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,11 +28,11 @@ const (
 
 var (
 	extraFolder             = kingpin.Flag("pgextra", "folder for other stuff").Required().Envar("PGEXTRA").String()
-	seeoneMasterHost        = kingpin.Flag("node-to-follow-host", "folder for other stuff").Required().Envar("SEEONE_MASTER_HOST").String()
 	pgDataFolder            = kingpin.Flag("pgdata", "postgres main data folder").Required().Envar("PGDATA").String()
 	pgPassword              = kingpin.Flag("pgpassword", "").Required().Envar("PGPASSWORD").String()
-	pgUser                  = kingpin.Flag("pguser", "").Required().Envar("PGUSER").String()
-	replicationUserPassword = kingpin.Flag("pgreplication-user-password", "").Required().Envar("PGREPLICATION_USER_PASSWORD").String()
+	pgUser                  = kingpin.Flag("pguser", "").Default("postgres").Envar("PGUSER").String()
+	hostname                = kingpin.Flag("hostname", "").Required().Envar("HOSTNAME").String()
+	replicationUserPassword = kingpin.Flag("pgreplication-user-password", "").Required().Envar("PGREPLICATION_PASSWORD").String()
 	etcdCluster             = kingpin.Flag("etcd-cluster", "").Required().Envar("ETCD_CLUSTER").String()
 
 	log       *logrus.Entry
@@ -47,9 +48,20 @@ func main() {
 	log = log.WithField("instanceID", instanceID)
 	log.Println("Starting seeone")
 
+	pgConfig := postgresql.Config{
+		DataDir:             *pgDataFolder,
+		ExtraDir:            *extraFolder,
+		ReplicationUsername: "replicator",
+		ReplicationPassword: *replicationUserPassword,
+		AdminUsername:       *pgUser,
+		AdminPassword:       *pgUser,
+	}
+
+	postmaster := postgresql.Postmaster{Config: pgConfig, Log: log}
+
 	if err := retry.Do(
 		func() error {
-			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "))
+			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "), *hostname, instanceID.String())
 			if err != nil {
 				return err
 			}
@@ -60,12 +72,25 @@ func main() {
 		return
 	}
 
-	if err := dcsClient.StartElection(ctx, instanceID.String()); err != nil {
+	dcsClient.SetInstanceID(instanceID.String())
+	if err := dcsClient.StartElection(ctx); err != nil {
 		log.Fatal(err)
 	}
-	log = log.WithField("role", "leader")
-	log.Println("I am the leader with Lock")
-	select {}
+
+	dcsClient.Observe(
+		ctx,
+		func() {
+			log = log.WithField("role", postgresql.Leader)
+			log.Println("I am the leader")
+			if err := postmaster.InitDB(); err != nil {
+				log.Fatal(err)
+			}
+		},
+		func() {
+			log = log.WithField("role", postgresql.Replica)
+			log.Println("I am the replica")
+		},
+	)
 }
 
 func Master(ctx context.Context) error {
@@ -75,9 +100,9 @@ func Master(ctx context.Context) error {
 	}
 
 	log.Println("Writing postgresql.conf")
-	if err := writeConf(); err != nil {
-		log.Fatal(err)
-	}
+	//if err := writeConf(); err != nil {
+	//	log.Fatal(err)
+	//}
 
 	log.Println("Starting postgres")
 	if err := StartPostgres(); err != nil {
@@ -97,12 +122,12 @@ func Master(ctx context.Context) error {
 		return err
 	}
 
-	if _, err := conn.Exec(
-		ctx,
-		fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", *seeoneMasterHost),
-	); err != nil {
-		return err
-	}
+	//if _, err := conn.Exec(
+	//	ctx,
+	//	fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", *seeoneMasterHost),
+	//); err != nil {
+	//	return err
+	//}
 
 	return nil
 }
@@ -130,9 +155,9 @@ func Replica(ctx context.Context) error {
 	}
 
 	log.Println("Writing postgresql.conf")
-	if err := writeConf(); err != nil {
-		log.Fatal(err)
-	}
+	//if err := writeConf(); err != nil {
+	//	log.Fatal(err)
+	//}
 
 	log.Println("Starting postgres")
 	if err := StartPostgres(); err != nil {
@@ -146,7 +171,7 @@ func makeBaseBackup() (*exec.Cmd, error) {
 	cmd := exec.Command(
 		"pg_basebackup",
 		"-h",
-		*seeoneMasterHost,
+		//*seeoneMasterHost,
 		"-U",
 		replicationUserName,
 		"-p",
@@ -180,32 +205,6 @@ func writeHBA() error {
 		hba.Bytes(),
 		0700,
 	); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func writeConf() error {
-	file, err := ioutil.ReadFile(path.Join(*extraFolder, "postgresql.template.conf"))
-	if err != nil {
-		return err
-	}
-
-	pgConf := bytes.NewBuffer(file)
-	if "" == replica {
-		pgConf.WriteString("\n")
-		pgConf.WriteString(fmt.Sprintf(
-			"primary_conninfo = 'user=%v password=%v host=%v port=5432 sslmode=prefer sslcompression=0'",
-			replicationUserName,
-			*replicationUserPassword,
-			*seeoneMasterHost,
-		))
-		pgConf.WriteString("\n")
-		pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", *seeoneMasterHost))
-	}
-
-	if err := ioutil.WriteFile(path.Join(*pgDataFolder, "postgresql.conf"), pgConf.Bytes(), 0700); err != nil {
 		return err
 	}
 

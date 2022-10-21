@@ -46,9 +46,8 @@ services:
     environment:
       PGPASSWORD: admin
       PGUSER: postgres
-      SEEONE_ROLE: master
-      SEEONE_MASTER_HOST: postgresql
-      PGREPLICATION_USER_PASSWORD: replicator
+      PGREPLICATION_PASSWORD: replicator
+      HOSTNAME: postgresql
       ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
 
   postgresql2:
@@ -60,9 +59,8 @@ services:
     environment:
       PGPASSWORD: admin
       PGUSER: postgres
-      SEEONE_ROLE: replica
-      SEEONE_MASTER_HOST: postgresql
-      PGREPLICATION_USER_PASSWORD: replicator
+      PGREPLICATION_PASSWORD: replicator
+      HOSTNAME: postgresql2
       ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
 
 #  pgbench:
