@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/logger"
 	"github.com/avast/retry-go"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 )
 
 const (
@@ -23,37 +26,45 @@ const (
 )
 
 var (
-	role                    = kingpin.Flag("role", "role of the server").Required().Enum(master, replica)
 	extraFolder             = kingpin.Flag("pgextra", "folder for other stuff").Required().Envar("PGEXTRA").String()
 	seeoneMasterHost        = kingpin.Flag("node-to-follow-host", "folder for other stuff").Required().Envar("SEEONE_MASTER_HOST").String()
 	pgDataFolder            = kingpin.Flag("pgdata", "postgres main data folder").Required().Envar("PGDATA").String()
 	pgPassword              = kingpin.Flag("pgpassword", "").Required().Envar("PGPASSWORD").String()
 	pgUser                  = kingpin.Flag("pguser", "").Required().Envar("PGUSER").String()
 	replicationUserPassword = kingpin.Flag("pgreplication-user-password", "").Required().Envar("PGREPLICATION_USER_PASSWORD").String()
+	etcdCluster             = kingpin.Flag("etcd-cluster", "").Required().Envar("ETCD_CLUSTER").String()
 
-	log *logrus.Entry
+	log       *logrus.Entry
+	dcsClient *dcs.EtcdImpl
 )
 
 func main() {
 	kingpin.Parse()
 
-	log = logger.NewDefaultLogger("info", fmt.Sprintf("seeone-%v", *role))
-	log.Println("Starting seeone, role:", *role)
-
 	ctx := context.Background()
+	instanceID := uuid.New()
+	log = logger.NewDefaultLogger("info", "seeone")
+	log = log.WithField("instanceID", instanceID)
+	log.Println("Starting seeone")
 
-	if *role == master {
-		if err := Master(ctx); err != nil {
-			log.Fatal(err)
-		}
+	if err := retry.Do(
+		func() error {
+			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "))
+			if err != nil {
+				return err
+			}
+
+			dcsClient = cli
+			return nil
+		}); err != nil {
+		return
 	}
 
-	if *role == replica {
-		if err := Replica(ctx); err != nil {
-			log.Fatal(err)
-		}
+	if err := dcsClient.StartElection(ctx, instanceID.String()); err != nil {
+		log.Fatal(err)
 	}
-
+	log = log.WithField("role", "leader")
+	log.Println("I am the leader with Lock")
 	select {}
 }
 
@@ -160,7 +171,7 @@ func writeHBA() error {
 	hba.WriteString("local all all trust\n")
 	hba.WriteString("host all all 0.0.0.0/0 scram-sha-256\n")
 	hba.WriteString("host all all ::1/128 md5\n")
-	if *role == master {
+	if "" == master {
 		hba.WriteString(fmt.Sprintf("host replication %v %v md5\n", replicationUserName, "0.0.0.0/0"))
 	}
 
@@ -182,7 +193,7 @@ func writeConf() error {
 	}
 
 	pgConf := bytes.NewBuffer(file)
-	if *role == replica {
+	if "" == replica {
 		pgConf.WriteString("\n")
 		pgConf.WriteString(fmt.Sprintf(
 			"primary_conninfo = 'user=%v password=%v host=%v port=5432 sslmode=prefer sslcompression=0'",

@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/avast/retry-go v3.0.0+incompatible
+	github.com/google/uuid v1.1.2
 	github.com/jackc/pgx/v5 v5.0.1
 	github.com/sirupsen/logrus v1.9.0
 	go.etcd.io/etcd/client/v3 v3.5.5

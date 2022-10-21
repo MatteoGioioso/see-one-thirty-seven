@@ -1,6 +1,42 @@
 version: "3.9"
 
+x-etcd-variables: &etcd-variables
+  ALLOW_NONE_AUTHENTICATION: "yes"
+  ETCD_LOG_LEVEL: warn
+  ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+  ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2181
+  ETCD_INITIAL_CLUSTER_TOKEN: token-01
+  ETCD_INITIAL_CLUSTER: ${NAME_1}=http://${HOST_1}:2380,${NAME_2}=http://${HOST_2}:2380,${NAME_3}=http://${HOST_3}:2380
+  ETCD_INITIAL_CLUSTER_STATE: new
+
 services:
+  etcd1:
+    image: quay.io/coreos/etcd
+    hostname: etcd1
+    environment:
+      <<: *etcd-variables
+      ETCD_NAME: ${NAME_1}
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://${HOST_1}:2380
+      ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_1}:2181
+
+  etcd2:
+    image: quay.io/coreos/etcd
+    hostname: etcd2
+    environment:
+      <<: *etcd-variables
+      ETCD_NAME: ${NAME_2}
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://${HOST_2}:2380
+      ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_2}:2181
+
+  etcd3:
+    image: quay.io/coreos/etcd
+    hostname: etcd3
+    environment:
+      <<: *etcd-variables
+      ETCD_NAME: ${NAME_3}
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://${HOST_3}:2380
+      ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_3}:2181
+
   postgresql:
     build:
       dockerfile: Dockerfile
@@ -13,6 +49,7 @@ services:
       SEEONE_ROLE: master
       SEEONE_MASTER_HOST: postgresql
       PGREPLICATION_USER_PASSWORD: replicator
+      ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
 
   postgresql2:
     build:
@@ -26,6 +63,7 @@ services:
       SEEONE_ROLE: replica
       SEEONE_MASTER_HOST: postgresql
       PGREPLICATION_USER_PASSWORD: replicator
+      ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
 
 #  pgbench:
 #    build:
