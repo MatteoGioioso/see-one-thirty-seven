@@ -173,12 +173,11 @@ func (e *Etcd) syncInstanceInfo(ctx context.Context) error {
 	)
 	for resp := range watch {
 		for _, ev := range resp.Events {
-			fmt.Printf("%+v\n", ev.PrevKv)
 			if err := e.putKeyValWithLease(ctx, string(ev.PrevKv.Key), string(ev.PrevKv.Value)); err != nil {
 				return err
 			}
 		}
-		e.Log.Printf("instance %v info synched", e.instanceID)
+		e.Log.Debugf("instance %v info synched", e.instanceID)
 	}
 
 	return nil

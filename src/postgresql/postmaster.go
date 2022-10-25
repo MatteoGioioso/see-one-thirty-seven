@@ -78,7 +78,7 @@ func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 	return conn, nil
 }
 
-func (p *Postmaster) CheckIfLeaderIsReady(ctx context.Context, leaderHostname string) error {
+func (p *Postmaster) CheckIfLeaderPostgresIsReady(ctx context.Context, leaderHostname string) error {
 	err := retry.Do(
 		func() error {
 			if _, err := p.getConn(ctx, leaderHostname); err != nil {
@@ -94,6 +94,54 @@ func (p *Postmaster) CheckIfLeaderIsReady(ctx context.Context, leaderHostname st
 		}),
 	)
 	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
+	if err := retry.Do(
+		func() error {
+			return p.makeBaseBackup(leaderHostname)
+		},
+		retry.Attempts(15),
+		retry.Delay(1*time.Second),
+		retry.OnRetry(func(n uint, err error) {
+			p.Log.Warningf("basebackup failed retry: %v", n)
+		}),
+	); err != nil {
+		return err
+	}
+
+	if err := os.Chmod(p.DataDir, 0700); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *Postmaster) makeBaseBackup(leaderHostname string) error {
+	cmd := exec.Command(
+		"pg_basebackup",
+		"-h",
+		leaderHostname,
+		"-U",
+		p.ReplicationUsername,
+		"-p",
+		"5432",
+		"-D",
+		p.DataDir,
+		"-Fp",
+		"-Xs",
+		"-P",
+		"-R",
+	)
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.ReplicationPassword))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
 		return err
 	}
 

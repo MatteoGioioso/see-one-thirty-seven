@@ -80,41 +80,77 @@ func main() {
 	dcsClient.Observe(
 		ctx,
 		func() {
-			pgConfig.SetRole(postgresql.Leader)
-			log = log.WithField("role", postgresql.Leader)
-			log.Println("I am the leader")
-			if err := postmaster.Init(); err != nil {
-				log.Fatal(err)
-			}
-
-			if err := pgConfig.CreateHBA(); err != nil {
-				log.Fatal(err)
-			}
-
-			if err := pgConfig.CreateConfig(""); err != nil {
-				log.Fatal(err)
-			}
-
-			if err := postmaster.Start(); err != nil {
+			if err := LeaderFunc(ctx, pgConfig, postmaster); err != nil {
 				log.Fatal(err)
 			}
 		},
 		func() {
-			pgConfig.SetRole(postgresql.Replica)
-			log = log.WithField("role", postgresql.Replica)
-			log.Println("I am the replica")
-			leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
-			if err != nil {
+			if err := ReplicaFunc(ctx, pgConfig, postmaster); err != nil {
 				log.Fatal(err)
 			}
-			fmt.Printf("%+v\n", leaderInfo)
-			if err := postmaster.CheckIfLeaderIsReady(ctx, leaderInfo.Hostname); err != nil {
-				log.Fatal(err)
-			}
-
-			log.Println("Leader is ready!")
 		},
 	)
+}
+
+func LeaderFunc(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
+	pgConfig.SetRole(postgresql.Leader)
+	log = log.WithField("role", postgresql.Leader)
+	log.Println("I am the leader")
+
+	if err := postmaster.Init(); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateHBA(); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateConfig(""); err != nil {
+		return err
+	}
+
+	if err := postmaster.Start(); err != nil {
+		return err
+	}
+
+	connect, err := postmaster.Connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	return pgConfig.SetupReplication(ctx, connect)
+}
+
+func ReplicaFunc(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
+	pgConfig.SetRole(postgresql.Replica)
+	log = log.WithField("role", postgresql.Replica)
+	log.Println("I am the replica")
+	leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := postmaster.CheckIfLeaderPostgresIsReady(ctx, leaderInfo.Hostname); err != nil {
+		return err
+	}
+
+	if err := postmaster.MakeBaseBackup(leaderInfo.Hostname); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateConfig(leaderInfo.Hostname); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateHBA(); err != nil {
+		return err
+	}
+
+	if err := postmaster.Start(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func Master(ctx context.Context) error {

@@ -76,17 +76,21 @@ func (c *Config) CreateConfig(leaderHostname string) error {
 func (c *Config) SetupReplication(ctx context.Context, conn *pgx.Conn) error {
 	if _, err := conn.Exec(
 		ctx,
-		fmt.Sprintf("CREATE USER %v WITH REPLICATION ENCRYPTED PASSWORD '%v'", c.ReplicationUsername, c.ReplicationPassword),
+		fmt.Sprintf(
+			"CREATE USER %v WITH REPLICATION ENCRYPTED PASSWORD '%v'",
+			c.ReplicationUsername,
+			c.ReplicationPassword,
+		),
 	); err != nil {
 		return err
 	}
 
-	if _, err := conn.Exec(
-		ctx,
-		fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", c.InstanceID),
-	); err != nil {
-		return err
-	}
+	//if _, err := conn.Exec(
+	//	ctx,
+	//	fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", c.InstanceID),
+	//); err != nil {
+	//	return err
+	//}
 
 	return nil
 }
