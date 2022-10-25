@@ -36,7 +36,7 @@ var (
 	etcdCluster             = kingpin.Flag("etcd-cluster", "").Required().Envar("ETCD_CLUSTER").String()
 
 	log       *logrus.Entry
-	dcsClient *dcs.EtcdImpl
+	dcsClient *dcs.Etcd
 )
 
 func main() {
@@ -54,14 +54,14 @@ func main() {
 		ReplicationUsername: "replicator",
 		ReplicationPassword: *replicationUserPassword,
 		AdminUsername:       *pgUser,
-		AdminPassword:       *pgUser,
+		AdminPassword:       *pgPassword,
 	}
 
 	postmaster := postgresql.Postmaster{Config: pgConfig, Log: log}
 
 	if err := retry.Do(
 		func() error {
-			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "), *hostname, instanceID.String())
+			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "), *hostname, instanceID.String(), log)
 			if err != nil {
 				return err
 			}
@@ -80,15 +80,39 @@ func main() {
 	dcsClient.Observe(
 		ctx,
 		func() {
+			pgConfig.SetRole(postgresql.Leader)
 			log = log.WithField("role", postgresql.Leader)
 			log.Println("I am the leader")
-			if err := postmaster.InitDB(); err != nil {
+			if err := postmaster.Init(); err != nil {
+				log.Fatal(err)
+			}
+
+			if err := pgConfig.CreateHBA(); err != nil {
+				log.Fatal(err)
+			}
+
+			if err := pgConfig.CreateConfig(""); err != nil {
+				log.Fatal(err)
+			}
+
+			if err := postmaster.Start(); err != nil {
 				log.Fatal(err)
 			}
 		},
 		func() {
+			pgConfig.SetRole(postgresql.Replica)
 			log = log.WithField("role", postgresql.Replica)
 			log.Println("I am the replica")
+			leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("%+v\n", leaderInfo)
+			if err := postmaster.CheckIfLeaderIsReady(ctx, leaderInfo.Hostname); err != nil {
+				log.Fatal(err)
+			}
+
+			log.Println("Leader is ready!")
 		},
 	)
 }
