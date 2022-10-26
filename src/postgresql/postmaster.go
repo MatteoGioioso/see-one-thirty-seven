@@ -104,28 +104,15 @@ func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.C
 	return conn, nil
 }
 
-func (p *Postmaster) IsReplica(ctx context.Context) (bool, error) {
-	conn, err := p.getConn(ctx, "localhost")
-	if err != nil {
-		// If we cannot connect to postgres process means that
-		return false, nil
-	}
-
-	var isInRecovery bool
-	if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
-		return false, err
-	}
-
-	return isInRecovery, nil
-}
-
 func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error {
+	var conn *pgx.Conn
 	err := retry.Do(
 		func() error {
-			if _, err := p.getConn(ctx, hostname); err != nil {
+			connTry, err := p.getConn(ctx, hostname)
+			if err != nil {
 				return err
 			}
-
+			conn = connTry
 			return nil
 		},
 		retry.OnRetry(func(n uint, err error) {
@@ -135,6 +122,8 @@ func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error
 	if err != nil {
 		return err
 	}
+
+	defer conn.Close(ctx)
 
 	return nil
 }
@@ -204,20 +193,6 @@ func (p *Postmaster) createPasswordFile(filename string) error {
 }
 func (p *Postmaster) deletePasswordFile(filename string) error {
 	return os.Remove(filename)
-}
-
-func (p *Postmaster) cleanupDataDir() error {
-	dir, err := ioutil.ReadDir(p.DataDir)
-	if err != nil {
-		return err
-	}
-	for _, d := range dir {
-		if err := os.RemoveAll(path.Join([]string{p.DataDir, d.Name()}...)); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func (p *Postmaster) getConn(ctx context.Context, host string) (*pgx.Conn, error) {

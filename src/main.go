@@ -75,60 +75,7 @@ func main() {
 	Loop(ctx, pgConfig, postmaster, dcsClient)
 }
 
-func BootstrapLeader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
-	if err := postmaster.Init(); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateHBA(); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateConfig(""); err != nil {
-		return err
-	}
-
-	if err := postmaster.Start(); err != nil {
-		return err
-	}
-
-	connect, err := postmaster.Connect(ctx)
-	if err != nil {
-		return err
-	}
-
-	return pgConfig.SetupReplication(ctx, connect)
-}
-
-func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, leaderHostname string) error {
-	if err := postmaster.EmptyDataDir(); err != nil {
-		return err
-	}
-	
-	if err := postmaster.IsPostgresReady(ctx, leaderHostname); err != nil {
-		return err
-	}
-
-	if err := postmaster.MakeBaseBackup(leaderHostname); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateConfig(leaderHostname); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateHBA(); err != nil {
-		return err
-	}
-
-	if err := postmaster.Start(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func AmIReplica(ctx context.Context, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) (bool, error) {
+func AmIReplica(ctx context.Context, postmaster postgresql.Postmaster) (bool, error) {
 	conn, err := postmaster.ConnectWithRetry(ctx, 3)
 	if err == nil {
 		var isInRecovery bool
@@ -162,76 +109,144 @@ func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql
 			log.Infof("I am the %v", role)
 
 			if role == postgresql.Leader {
-				replica, err := AmIReplica(ctx, postmaster, dcsClient)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				if replica {
-					if err := postmaster.Promote(); err != nil {
-						log.Fatal(err)
-					}
-				}
-
-				pgConfig.SetRole(postgresql.Leader)
-				log = log.WithField("role", postgresql.Leader)
-				postmaster.Log = log
-				dcsClient.Log = log
-
-				if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
-					log.Fatal(err)
-				}
-
-				isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				if isBootstrapped {
-					continue
-				}
-
-				log.Infof("bootstrapping")
-				if err := BootstrapLeader(ctx, pgConfig, postmaster); err != nil {
-					log.Fatal(err)
-				}
-
-				if err := dcsClient.SetBootstrapped(ctx); err != nil {
+				if err := Leader(ctx, pgConfig, postmaster, dcsClient); err != nil {
 					log.Fatal(err)
 				}
 			} else {
-				pgConfig.SetRole(postgresql.Replica)
-				log = log.WithField("role", postgresql.Replica)
-				postmaster.Log = log
-				dcsClient.Log = log
-
-				leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
-					log.Fatal(err)
-				}
-
-				isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				if isBootstrapped {
-					continue
-				}
-
-				log.Infof("bootstrapping")
-				if err := BootstrapReplica(ctx, pgConfig, postmaster, leaderInfo.Hostname); err != nil {
-					log.Fatal(err)
-				}
-
-				if err := dcsClient.SetBootstrapped(ctx); err != nil {
+				if err := Replica(ctx, pgConfig, postmaster, dcsClient); err != nil {
 					log.Fatal(err)
 				}
 			}
 		}
 	}
+}
+
+func Leader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) error {
+	replica, err := AmIReplica(ctx, postmaster)
+	if err != nil {
+		return err
+	}
+
+	if replica {
+		if err := postmaster.Promote(); err != nil {
+			return err
+		}
+	}
+
+	pgConfig.SetRole(postgresql.Leader)
+	log = log.WithField("role", postgresql.Leader)
+	postmaster.Log = log
+	dcsClient.Log = log
+
+	if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
+		return err
+	}
+
+	isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
+	if err != nil {
+		return err
+	}
+
+	if isBootstrapped {
+		return nil
+	}
+
+	log.Infof("bootstrapping")
+	if err := BootstrapLeader(ctx, pgConfig, postmaster); err != nil {
+		return err
+	}
+
+	if err := dcsClient.SetBootstrapped(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func Replica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) error {
+	pgConfig.SetRole(postgresql.Replica)
+	log = log.WithField("role", postgresql.Replica)
+	postmaster.Log = log
+	dcsClient.Log = log
+
+	leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
+		return err
+	}
+
+	isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
+	if err != nil {
+		return err
+	}
+
+	if isBootstrapped {
+		return nil
+	}
+
+	log.Infof("bootstrapping")
+	if err := BootstrapReplica(ctx, pgConfig, postmaster, leaderInfo.Hostname); err != nil {
+		return err
+	}
+
+	if err := dcsClient.SetBootstrapped(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func BootstrapLeader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
+	if err := postmaster.Init(); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateHBA(); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateConfig(""); err != nil {
+		return err
+	}
+
+	if err := postmaster.Start(); err != nil {
+		return err
+	}
+
+	connect, err := postmaster.Connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	return pgConfig.SetupReplication(ctx, connect)
+}
+
+func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, leaderHostname string) error {
+	if err := postmaster.EmptyDataDir(); err != nil {
+		return err
+	}
+
+	if err := postmaster.IsPostgresReady(ctx, leaderHostname); err != nil {
+		return err
+	}
+
+	if err := postmaster.MakeBaseBackup(leaderHostname); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateConfig(leaderHostname); err != nil {
+		return err
+	}
+
+	if err := pgConfig.CreateHBA(); err != nil {
+		return err
+	}
+
+	if err := postmaster.Start(); err != nil {
+		return err
+	}
+
+	return nil
 }
