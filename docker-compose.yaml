@@ -49,6 +49,7 @@ services:
       PGREPLICATION_PASSWORD: replicator
       HOSTNAME: postgresql
       ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
+      LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
 
@@ -64,6 +65,7 @@ services:
       PGREPLICATION_PASSWORD: replicator
       HOSTNAME: postgresql2
       ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
+      LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
 

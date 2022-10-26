@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
+	"github.com/MatteoGioioso/seeonethirtyseven/daemon"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/logger"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/avast/retry-go"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"go.etcd.io/etcd/client/v3/concurrency"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"strings"
 	"time"
@@ -24,6 +23,7 @@ var (
 	replicationUserPassword = kingpin.Flag("pgreplication-user-password", "").Required().Envar("PGREPLICATION_PASSWORD").String()
 	etcdCluster             = kingpin.Flag("etcd-cluster", "").Required().Envar("ETCD_CLUSTER").String()
 	leaderLease             = kingpin.Flag("leader-lease", "").Envar("LEADER_LEASE").Default("10").Int()
+	logLevel                = kingpin.Flag("log-level", "").Envar("LOG_LEVEL").Default("info").Enum("info", "debug", "warning")
 
 	log *logrus.Entry
 )
@@ -33,14 +33,14 @@ func main() {
 
 	ctx := context.Background()
 	instanceID := uuid.New()
-	log = logger.NewDefaultLogger("info", "seeone")
+	log = logger.NewDefaultLogger(*logLevel, "seeone")
 	log = log.WithField("instanceID", instanceID)
 	log.Println("Starting seeone")
 
 	retry.DefaultDelay = 2 * time.Second
 	retry.DefaultAttempts = 15
 	retry.DefaultOnRetry = func(n uint, err error) {
-		log.Warningf("%v retrying: %v/%v", err, n, retry.DefaultAttempts)
+		log.Debugf("%v, retrying: %v/%v", err, n, retry.DefaultAttempts)
 	}
 
 	pgConfig := postgresql.Config{
@@ -67,186 +67,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	dcsClient.SetInstanceID(instanceID.String())
 	if err := dcsClient.StartElection(ctx); err != nil {
 		log.Fatal(err)
 	}
 
-	Loop(ctx, pgConfig, postmaster, dcsClient)
-}
-
-func AmIReplica(ctx context.Context, postmaster postgresql.Postmaster) (bool, error) {
-	conn, err := postmaster.ConnectWithRetry(ctx, 3)
-	if err == nil {
-		var isInRecovery bool
-		if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
-			return false, err
-		}
-
-		return isInRecovery, nil
-	} else {
-		return false, nil
-	}
-}
-
-func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) {
-	tick := time.NewTicker(time.Duration(*leaderLease) * time.Second)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-tick.C:
-			role, err := dcsClient.GetRole(ctx)
-			if err != nil {
-				if errors.Is(err, concurrency.ErrElectionNoLeader) {
-					log.Errorf("no leader yet available: %v", err)
-					continue
-				} else {
-					log.Fatal(err)
-				}
-			}
-
-			log.Infof("I am the %v", role)
-
-			if role == postgresql.Leader {
-				if err := Leader(ctx, pgConfig, postmaster, dcsClient); err != nil {
-					log.Fatal(err)
-				}
-			} else {
-				if err := Replica(ctx, pgConfig, postmaster, dcsClient); err != nil {
-					log.Fatal(err)
-				}
-			}
-		}
-	}
-}
-
-func Leader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) error {
-	replica, err := AmIReplica(ctx, postmaster)
-	if err != nil {
-		return err
+	d := daemon.Daemon{
+		PgConfig:   pgConfig,
+		Postmaster: postmaster,
+		DcsClient:  dcsClient,
+		Log:        log,
 	}
 
-	if replica {
-		if err := postmaster.Promote(); err != nil {
-			return err
-		}
+	if err := d.Loop(ctx); err != nil {
+		log.Fatal(err)
 	}
-
-	pgConfig.SetRole(postgresql.Leader)
-	log = log.WithField("role", postgresql.Leader)
-	postmaster.Log = log
-	dcsClient.Log = log
-
-	if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
-		return err
-	}
-
-	isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
-	if err != nil {
-		return err
-	}
-
-	if isBootstrapped {
-		return nil
-	}
-
-	log.Infof("bootstrapping")
-	if err := BootstrapLeader(ctx, pgConfig, postmaster); err != nil {
-		return err
-	}
-
-	if err := dcsClient.SetBootstrapped(ctx); err != nil {
-		return err
-	}
-	return nil
-}
-
-func Replica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) error {
-	pgConfig.SetRole(postgresql.Replica)
-	log = log.WithField("role", postgresql.Replica)
-	postmaster.Log = log
-	dcsClient.Log = log
-
-	leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
-	if err != nil {
-		return err
-	}
-
-	if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
-		return err
-	}
-
-	isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
-	if err != nil {
-		return err
-	}
-
-	if isBootstrapped {
-		return nil
-	}
-
-	log.Infof("bootstrapping")
-	if err := BootstrapReplica(ctx, pgConfig, postmaster, leaderInfo.Hostname); err != nil {
-		return err
-	}
-
-	if err := dcsClient.SetBootstrapped(ctx); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func BootstrapLeader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
-	if err := postmaster.Init(); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateHBA(); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateConfig(""); err != nil {
-		return err
-	}
-
-	if err := postmaster.Start(); err != nil {
-		return err
-	}
-
-	connect, err := postmaster.Connect(ctx)
-	if err != nil {
-		return err
-	}
-
-	return pgConfig.SetupReplication(ctx, connect)
-}
-
-func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, leaderHostname string) error {
-	if err := postmaster.EmptyDataDir(); err != nil {
-		return err
-	}
-
-	if err := postmaster.IsPostgresReady(ctx, leaderHostname); err != nil {
-		return err
-	}
-
-	if err := postmaster.MakeBaseBackup(leaderHostname); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateConfig(leaderHostname); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateHBA(); err != nil {
-		return err
-	}
-
-	if err := postmaster.Start(); err != nil {
-		return err
-	}
-
-	return nil
 }

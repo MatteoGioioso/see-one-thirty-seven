@@ -78,10 +78,6 @@ func newEtcdImpl(endpoints []string, hostname string, instanceID string, lease i
 	}, nil
 }
 
-func (e *Etcd) SetInstanceID(instanceID string) {
-	e.instanceID = instanceID
-}
-
 func (e *Etcd) GetRole(ctx context.Context) (string, error) {
 	leader, err := e.election.Leader(ctx)
 	if err != nil {
@@ -91,18 +87,6 @@ func (e *Etcd) GetRole(ctx context.Context) (string, error) {
 		return postgresql.Leader, nil
 	} else {
 		return postgresql.Replica, nil
-	}
-}
-
-func (e *Etcd) AmITheLeader(ctx context.Context) (bool, error) {
-	leader, err := e.election.Leader(ctx)
-	if err != nil {
-		return false, err
-	}
-	if string(leader.Kvs[0].Value) == e.instanceID {
-		return true, nil
-	} else {
-		return false, nil
 	}
 }
 
@@ -161,7 +145,7 @@ func (e *Etcd) GetLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 			return nil
 		},
 		retry.OnRetry(func(n uint, err error) {
-			e.Log.Warningf("leader not yet found in dcs, retry: %v", n)
+			e.Log.Debugf("leader not yet found in dcs, retry: %v/%v", n, retry.DefaultAttempts)
 		}),
 	)
 	if err != nil {
@@ -243,14 +227,14 @@ func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (Instance
 }
 
 func (e *Etcd) saveInstanceProp(ctx context.Context, prop, val string) error {
-	if err := e.putKeyValWithLease(ctx, e.getInstanceProKey(prop), val); err != nil {
+	if err := e.putKeyVal(ctx, e.getInstanceProKey(prop), val); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (e *Etcd) putKeyValWithLease(ctx context.Context, key, val string) error {
+func (e *Etcd) putKeyVal(ctx context.Context, key, val string) error {
 	if _, err := e.instanceSession.Client().Put(
 		ctx,
 		key,
@@ -260,18 +244,6 @@ func (e *Etcd) putKeyValWithLease(ctx context.Context, key, val string) error {
 	}
 
 	return nil
-}
-
-func (e *Etcd) setInstanceRole(ctx context.Context, role string) error {
-	if err := e.saveInstanceProp(ctx, roleKey, role); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (e *Etcd) getInstanceKey() string {
-	return fmt.Sprintf("%v/%v", postgresql.InstanceInfoPrefix, e.instanceID)
 }
 
 func (e *Etcd) getInstanceProKey(prop string) string {

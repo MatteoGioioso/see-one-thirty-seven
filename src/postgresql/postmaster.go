@@ -79,8 +79,8 @@ func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 }
 
 func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.Conn, error) {
-	var conn *pgx.Conn
 	if p.conn != nil {
+		p.Log.Debugf("Reusing connection with PID: %v", p.conn.PgConn().PID())
 		return p.conn, nil
 	}
 
@@ -91,7 +91,6 @@ func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.C
 				return err
 			}
 
-			conn = connTry
 			p.conn = connTry
 			return nil
 		},
@@ -101,7 +100,7 @@ func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.C
 		return nil, err
 	}
 
-	return conn, nil
+	return p.conn, nil
 }
 
 func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error {
@@ -116,7 +115,13 @@ func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error
 			return nil
 		},
 		retry.OnRetry(func(n uint, err error) {
-			p.Log.Warningf("Postgres at hostname %v not ready, retry: %v", hostname, n)
+			p.Log.Debugf(
+				"postgres process at hostname %v not ready with error %v, retry: %v/%v",
+				hostname,
+				err,
+				n,
+				retry.DefaultAttempts,
+			)
 		}),
 	)
 	if err != nil {
@@ -134,7 +139,7 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 			return p.makeBaseBackup(leaderHostname)
 		},
 		retry.OnRetry(func(n uint, err error) {
-			p.Log.Warningf("basebackup failed retry: %v", n)
+			p.Log.Debugf("basebackup failed because %v, retry: %v/%v", err, n, retry.DefaultAttempts)
 		}),
 	); err != nil {
 		return err
