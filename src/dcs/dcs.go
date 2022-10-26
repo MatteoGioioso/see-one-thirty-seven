@@ -8,3 +8,9 @@ type InstanceInfo struct {
 	Role     string `json:"role"`
 	Hostname string `json:"hostname"`
 }
+
+type Config struct {
+	Hostname   string
+	InstanceID string
+	Lease      int
+}

@@ -10,12 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"time"
 )
 
 type Postmaster struct {
 	Config
 	Log *logrus.Entry
+
+	conn *pgx.Conn
 }
 
 func (p *Postmaster) Init() error {
@@ -58,19 +59,44 @@ func (p *Postmaster) Start() error {
 	return cmd.Process.Release()
 }
 
+func (p *Postmaster) Promote() error {
+	cmd := exec.Command(
+		"pg_ctl",
+		"promote",
+		"-D",
+		fmt.Sprintf(`%v`, p.DataDir),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
 func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
+	return p.ConnectWithRetry(ctx, retry.DefaultAttempts)
+}
+
+func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.Conn, error) {
 	var conn *pgx.Conn
+	if p.conn != nil {
+		return p.conn, nil
+	}
 
-	err := retry.Do(func() error {
-		connTry, err := p.getConn(ctx, "localhost")
-		if err != nil {
-			return err
-		}
+	err := retry.Do(
+		func() error {
+			connTry, err := p.getConn(ctx, "localhost")
+			if err != nil {
+				return err
+			}
 
-		conn = connTry
-
-		return nil
-	})
+			conn = connTry
+			p.conn = connTry
+			return nil
+		},
+		retry.Attempts(retries),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -78,19 +104,32 @@ func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 	return conn, nil
 }
 
-func (p *Postmaster) CheckIfLeaderPostgresIsReady(ctx context.Context, leaderHostname string) error {
+func (p *Postmaster) IsReplica(ctx context.Context) (bool, error) {
+	conn, err := p.getConn(ctx, "localhost")
+	if err != nil {
+		// If we cannot connect to postgres process means that
+		return false, nil
+	}
+
+	var isInRecovery bool
+	if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+		return false, err
+	}
+
+	return isInRecovery, nil
+}
+
+func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error {
 	err := retry.Do(
 		func() error {
-			if _, err := p.getConn(ctx, leaderHostname); err != nil {
+			if _, err := p.getConn(ctx, hostname); err != nil {
 				return err
 			}
 
 			return nil
 		},
-		retry.Attempts(15),
-		retry.Delay(1*time.Second),
 		retry.OnRetry(func(n uint, err error) {
-			p.Log.Warningf("Leader at hostname %v not ready, retry: %v", leaderHostname, n)
+			p.Log.Warningf("Postgres at hostname %v not ready, retry: %v", hostname, n)
 		}),
 	)
 	if err != nil {
@@ -105,8 +144,6 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 		func() error {
 			return p.makeBaseBackup(leaderHostname)
 		},
-		retry.Attempts(15),
-		retry.Delay(1*time.Second),
 		retry.OnRetry(func(n uint, err error) {
 			p.Log.Warningf("basebackup failed retry: %v", n)
 		}),
@@ -116,6 +153,20 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 
 	if err := os.Chmod(p.DataDir, 0700); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (p *Postmaster) EmptyDataDir() error {
+	dir, err := ioutil.ReadDir(p.DataDir)
+	if err != nil {
+		return err
+	}
+	for _, d := range dir {
+		if err := os.RemoveAll(path.Join([]string{p.DataDir, d.Name()}...)); err != nil {
+			return err
+		}
 	}
 
 	return nil
