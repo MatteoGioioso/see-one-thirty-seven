@@ -101,7 +101,11 @@ func BootstrapLeader(ctx context.Context, pgConfig postgresql.Config, postmaster
 }
 
 func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, leaderHostname string) error {
-	if err := postmaster.CheckIfLeaderPostgresIsReady(ctx, leaderHostname); err != nil {
+	if err := postmaster.EmptyDataDir(); err != nil {
+		return err
+	}
+	
+	if err := postmaster.IsPostgresReady(ctx, leaderHostname); err != nil {
 		return err
 	}
 
@@ -124,6 +128,20 @@ func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaste
 	return nil
 }
 
+func AmIReplica(ctx context.Context, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) (bool, error) {
+	conn, err := postmaster.ConnectWithRetry(ctx, 3)
+	if err == nil {
+		var isInRecovery bool
+		if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+			return false, err
+		}
+
+		return isInRecovery, nil
+	} else {
+		return false, nil
+	}
+}
+
 func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) {
 	tick := time.NewTicker(time.Duration(*leaderLease) * time.Second)
 	defer tick.Stop()
@@ -135,7 +153,7 @@ func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql
 			if err != nil {
 				if errors.Is(err, concurrency.ErrElectionNoLeader) {
 					log.Errorf("no leader yet available: %v", err)
-					return
+					continue
 				} else {
 					log.Fatal(err)
 				}
@@ -144,6 +162,17 @@ func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql
 			log.Infof("I am the %v", role)
 
 			if role == postgresql.Leader {
+				replica, err := AmIReplica(ctx, postmaster, dcsClient)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if replica {
+					if err := postmaster.Promote(); err != nil {
+						log.Fatal(err)
+					}
+				}
+
 				pgConfig.SetRole(postgresql.Leader)
 				log = log.WithField("role", postgresql.Leader)
 				postmaster.Log = log

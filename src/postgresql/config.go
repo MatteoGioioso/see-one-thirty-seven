@@ -31,9 +31,7 @@ func (c *Config) CreateHBA() error {
 	hba.WriteString("local all all trust\n")
 	hba.WriteString("host all all 0.0.0.0/0 scram-sha-256\n")
 	hba.WriteString("host all all ::1/128 md5\n")
-	if c.role == Leader {
-		hba.WriteString(fmt.Sprintf("host replication %v %v md5\n", c.ReplicationUsername, "0.0.0.0/0"))
-	}
+	hba.WriteString(fmt.Sprintf("host replication %v %v md5\n", c.ReplicationUsername, "0.0.0.0/0"))
 
 	return ioutil.WriteFile(
 		path.Join(c.ExtraDir, "pg_hba.conf"),

@@ -178,20 +178,58 @@ func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 	}
 
 	leaderID := string(leader.Kvs[0].Value)
+	leaderInfo, err := e.getInstanceInfo(ctx, leaderID)
+	if err != nil {
+		return InstanceInfo{}, err
+	}
 
+	return leaderInfo, nil
+}
+
+func (e *Etcd) GetInstanceInfo(ctx context.Context) (InstanceInfo, error) {
+	return e.getInstanceInfoWithRetry(ctx, e.instanceID)
+}
+
+func (e *Etcd) getInstanceInfoWithRetry(ctx context.Context, instanceID string) (InstanceInfo, error) {
+	var i InstanceInfo
+	err := retry.Do(
+		func() error {
+			iTry, err := e.getInstanceInfo(ctx, instanceID)
+			if err != nil {
+				return err
+			}
+			i = iTry
+
+			return nil
+		},
+		retry.OnRetry(func(n uint, err error) {
+			e.Log.Warningf("instance info not yet found in dcs, retry: %v", n)
+		}),
+	)
+	if err != nil {
+		return InstanceInfo{}, err
+	}
+
+	return i, nil
+}
+
+func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (InstanceInfo, error) {
 	response, err := e.instanceSession.Client().Get(
 		ctx,
-		fmt.Sprintf("%v/%v", postgresql.InstanceInfoPrefix, leaderID),
+		fmt.Sprintf("%v/%v", postgresql.InstanceInfoPrefix, instanceID),
 		clientv3.WithPrefix(),
 	)
 	if err != nil {
 		return InstanceInfo{}, err
 	}
 
-	i := InstanceInfo{
-		ID: leaderID,
+	if response.Count == 0 {
+		return InstanceInfo{}, fmt.Errorf("instance info with id %v not found", instanceID)
 	}
 
+	i := InstanceInfo{
+		ID: instanceID,
+	}
 	for _, kv := range response.Kvs {
 		switch strings.Split(string(kv.Key), "/")[3] {
 		case hostnameKey:
