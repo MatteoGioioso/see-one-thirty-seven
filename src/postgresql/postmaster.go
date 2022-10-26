@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"time"
 )
 
 type Postmaster struct {
@@ -87,8 +86,6 @@ func (p *Postmaster) CheckIfLeaderPostgresIsReady(ctx context.Context, leaderHos
 
 			return nil
 		},
-		retry.Attempts(15),
-		retry.Delay(1*time.Second),
 		retry.OnRetry(func(n uint, err error) {
 			p.Log.Warningf("Leader at hostname %v not ready, retry: %v", leaderHostname, n)
 		}),
@@ -105,8 +102,6 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 		func() error {
 			return p.makeBaseBackup(leaderHostname)
 		},
-		retry.Attempts(15),
-		retry.Delay(1*time.Second),
 		retry.OnRetry(func(n uint, err error) {
 			p.Log.Warningf("basebackup failed retry: %v", n)
 		}),

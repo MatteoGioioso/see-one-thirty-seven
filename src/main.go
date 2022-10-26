@@ -1,29 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/logger"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/avast/retry-go"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/sirupsen/logrus"
+	"go.etcd.io/etcd/client/v3/concurrency"
 	"gopkg.in/alecthomas/kingpin.v2"
-	"io/ioutil"
-	"os"
-	"os/exec"
-	"path"
 	"strings"
-)
-
-const (
-	master  = "master"
-	replica = "replica"
-
-	replicationUserName = "replicator"
+	"time"
 )
 
 var (
@@ -34,9 +23,9 @@ var (
 	hostname                = kingpin.Flag("hostname", "").Required().Envar("HOSTNAME").String()
 	replicationUserPassword = kingpin.Flag("pgreplication-user-password", "").Required().Envar("PGREPLICATION_PASSWORD").String()
 	etcdCluster             = kingpin.Flag("etcd-cluster", "").Required().Envar("ETCD_CLUSTER").String()
+	leaderLease             = kingpin.Flag("leader-lease", "").Envar("LEADER_LEASE").Default("10").Int()
 
-	log       *logrus.Entry
-	dcsClient *dcs.Etcd
+	log *logrus.Entry
 )
 
 func main() {
@@ -47,6 +36,12 @@ func main() {
 	log = logger.NewDefaultLogger("info", "seeone")
 	log = log.WithField("instanceID", instanceID)
 	log.Println("Starting seeone")
+
+	retry.DefaultDelay = 2 * time.Second
+	retry.DefaultAttempts = 15
+	retry.DefaultOnRetry = func(n uint, err error) {
+		log.Warningf("%v retrying: %v/%v", err, n, retry.DefaultAttempts)
+	}
 
 	pgConfig := postgresql.Config{
 		DataDir:             *pgDataFolder,
@@ -59,17 +54,17 @@ func main() {
 
 	postmaster := postgresql.Postmaster{Config: pgConfig, Log: log}
 
-	if err := retry.Do(
-		func() error {
-			cli, err := dcs.NewEtcdImpl(strings.Split(*etcdCluster, " "), *hostname, instanceID.String(), log)
-			if err != nil {
-				return err
-			}
-
-			dcsClient = cli
-			return nil
-		}); err != nil {
-		return
+	dcsClient, err := dcs.NewEtcdImpl(
+		strings.Split(*etcdCluster, " "),
+		dcs.Config{
+			Hostname:   *hostname,
+			InstanceID: instanceID.String(),
+			Lease:      *leaderLease,
+		},
+		log,
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	dcsClient.SetInstanceID(instanceID.String())
@@ -77,26 +72,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	dcsClient.Observe(
-		ctx,
-		func() {
-			if err := LeaderFunc(ctx, pgConfig, postmaster); err != nil {
-				log.Fatal(err)
-			}
-		},
-		func() {
-			if err := ReplicaFunc(ctx, pgConfig, postmaster); err != nil {
-				log.Fatal(err)
-			}
-		},
-	)
+	Loop(ctx, pgConfig, postmaster, dcsClient)
 }
 
-func LeaderFunc(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
-	pgConfig.SetRole(postgresql.Leader)
-	log = log.WithField("role", postgresql.Leader)
-	log.Println("I am the leader")
-
+func BootstrapLeader(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
 	if err := postmaster.Init(); err != nil {
 		return err
 	}
@@ -121,24 +100,16 @@ func LeaderFunc(ctx context.Context, pgConfig postgresql.Config, postmaster post
 	return pgConfig.SetupReplication(ctx, connect)
 }
 
-func ReplicaFunc(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster) error {
-	pgConfig.SetRole(postgresql.Replica)
-	log = log.WithField("role", postgresql.Replica)
-	log.Println("I am the replica")
-	leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
-	if err != nil {
+func BootstrapReplica(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, leaderHostname string) error {
+	if err := postmaster.CheckIfLeaderPostgresIsReady(ctx, leaderHostname); err != nil {
 		return err
 	}
 
-	if err := postmaster.CheckIfLeaderPostgresIsReady(ctx, leaderInfo.Hostname); err != nil {
+	if err := postmaster.MakeBaseBackup(leaderHostname); err != nil {
 		return err
 	}
 
-	if err := postmaster.MakeBaseBackup(leaderInfo.Hostname); err != nil {
-		return err
-	}
-
-	if err := pgConfig.CreateConfig(leaderInfo.Hostname); err != nil {
+	if err := pgConfig.CreateConfig(leaderHostname); err != nil {
 		return err
 	}
 
@@ -153,161 +124,85 @@ func ReplicaFunc(ctx context.Context, pgConfig postgresql.Config, postmaster pos
 	return nil
 }
 
-func Master(ctx context.Context) error {
-	log.Println("Writing pg_hba.conf")
-	if err := writeHBA(); err != nil {
-		log.Fatal(err)
-	}
+func Loop(ctx context.Context, pgConfig postgresql.Config, postmaster postgresql.Postmaster, dcsClient *dcs.Etcd) {
+	tick := time.NewTicker(time.Duration(*leaderLease) * time.Second)
+	defer tick.Stop()
 
-	log.Println("Writing postgresql.conf")
-	//if err := writeConf(); err != nil {
-	//	log.Fatal(err)
-	//}
-
-	log.Println("Starting postgres")
-	if err := StartPostgres(); err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("Connecting to database")
-	conn, err := getConn(ctx, "localhost")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if _, err := conn.Exec(
-		ctx,
-		fmt.Sprintf("CREATE USER %v WITH REPLICATION ENCRYPTED PASSWORD '%v'", replicationUserName, *replicationUserPassword),
-	); err != nil {
-		return err
-	}
-
-	//if _, err := conn.Exec(
-	//	ctx,
-	//	fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", *seeoneMasterHost),
-	//); err != nil {
-	//	return err
-	//}
-
-	return nil
-}
-
-func Replica(ctx context.Context) error {
-	log.Println("Running pg_basebackup")
-
-	if err := retry.Do(
-		func() error {
-			backup, _ := makeBaseBackup()
-			return backup.Run()
-		}); err != nil {
-		return err
-	}
-
-	log.Println("Done pg_basebackup!")
-
-	if err := os.Chmod(*pgDataFolder, 0700); err != nil {
-		return err
-	}
-
-	log.Println("Writing pg_hba.conf")
-	if err := writeHBA(); err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("Writing postgresql.conf")
-	//if err := writeConf(); err != nil {
-	//	log.Fatal(err)
-	//}
-
-	log.Println("Starting postgres")
-	if err := StartPostgres(); err != nil {
-		log.Fatal(err)
-	}
-
-	return nil
-}
-
-func makeBaseBackup() (*exec.Cmd, error) {
-	cmd := exec.Command(
-		"pg_basebackup",
-		"-h",
-		//*seeoneMasterHost,
-		"-U",
-		replicationUserName,
-		"-p",
-		"5432",
-		"-D",
-		*pgDataFolder,
-		"-Fp",
-		"-Xs",
-		"-P",
-		"-R",
-	)
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", *replicationUserPassword))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd, nil
-}
-
-func writeHBA() error {
-	hba := bytes.NewBufferString("")
-	hba.WriteString("local all all trust\n")
-	hba.WriteString("host all all 0.0.0.0/0 scram-sha-256\n")
-	hba.WriteString("host all all ::1/128 md5\n")
-	if "" == master {
-		hba.WriteString(fmt.Sprintf("host replication %v %v md5\n", replicationUserName, "0.0.0.0/0"))
-	}
-
-	if err := ioutil.WriteFile(
-		path.Join(*extraFolder, "pg_hba.conf"),
-		hba.Bytes(),
-		0700,
-	); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func StartPostgres() error {
-	app := "postgres"
-	dataFolder := *pgDataFolder
-	hbaLocation := fmt.Sprintf("--hba_file=%v", path.Join(*extraFolder, "pg_hba.conf"))
-	cmd := exec.Command(app, "-D", dataFolder, "-h", `"*"`, hbaLocation)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	if err := cmd.Process.Release(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func getConn(ctx context.Context, host string) (*pgx.Conn, error) {
-	connString := fmt.Sprintf("postgres://%v:%v@%v:5432/postgres", *pgUser, *pgPassword, host)
-	var conn *pgx.Conn
-
-	if err := retry.Do(
-		func() error {
-			connTry, err := pgx.Connect(ctx, connString)
+	for {
+		select {
+		case <-tick.C:
+			role, err := dcsClient.GetRole(ctx)
 			if err != nil {
-				log.Printf("Connection failed, retry: %v", err)
-				return err
+				if errors.Is(err, concurrency.ErrElectionNoLeader) {
+					log.Errorf("no leader yet available: %v", err)
+					return
+				} else {
+					log.Fatal(err)
+				}
 			}
 
-			conn = connTry
-			return nil
-		},
-	); err != nil {
-		return nil, err
+			log.Infof("I am the %v", role)
+
+			if role == postgresql.Leader {
+				pgConfig.SetRole(postgresql.Leader)
+				log = log.WithField("role", postgresql.Leader)
+				postmaster.Log = log
+				dcsClient.Log = log
+
+				if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
+					log.Fatal(err)
+				}
+
+				isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if isBootstrapped {
+					continue
+				}
+
+				log.Infof("bootstrapping")
+				if err := BootstrapLeader(ctx, pgConfig, postmaster); err != nil {
+					log.Fatal(err)
+				}
+
+				if err := dcsClient.SetBootstrapped(ctx); err != nil {
+					log.Fatal(err)
+				}
+			} else {
+				pgConfig.SetRole(postgresql.Replica)
+				log = log.WithField("role", postgresql.Replica)
+				postmaster.Log = log
+				dcsClient.Log = log
+
+				leaderInfo, err := dcsClient.GetLeaderInfo(ctx)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if err := dcsClient.SyncInstanceInfo(ctx, postgresql.Leader); err != nil {
+					log.Fatal(err)
+				}
+
+				isBootstrapped, err := dcsClient.IsBootstrapped(ctx)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if isBootstrapped {
+					continue
+				}
+
+				log.Infof("bootstrapping")
+				if err := BootstrapReplica(ctx, pgConfig, postmaster, leaderInfo.Hostname); err != nil {
+					log.Fatal(err)
+				}
+
+				if err := dcsClient.SetBootstrapped(ctx); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
 	}
-
-	log.Println("Connected!")
-
-	return conn, nil
 }
