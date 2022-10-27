@@ -17,6 +17,7 @@ type Postmaster struct {
 	Log *logrus.Entry
 
 	conn *pgx.Conn
+	pid  *int
 }
 
 func (p *Postmaster) Init() error {
@@ -56,7 +57,50 @@ func (p *Postmaster) Start() error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
+	p.pid = &cmd.Process.Pid
+	p.Log.Infof("starting postgres process PID: %v", *p.pid)
+
 	return cmd.Process.Release()
+}
+
+func (p *Postmaster) Stop() error {
+	cmd := exec.Command(
+		"pg_ctl",
+		"-D",
+		fmt.Sprintf(`"%v"`, p.DataDir),
+		"stop",
+		"-m",
+		"smart",
+	)
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *Postmaster) IsRunning() bool {
+	return p.isRunning()
+}
+
+func (p *Postmaster) isRunning() bool {
+	cmd := exec.Command(
+		"pg_isready",
+	)
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
+	out, err := cmd.Output()
+	if err != nil {
+		p.Log.Errorf("error from pg_isready: %v", err)
+		return false
+	}
+	p.Log.Debugf("pg_isready: %s", out)
+
+	return true
 }
 
 func (p *Postmaster) Promote() error {
@@ -80,55 +124,39 @@ func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 
 func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.Conn, error) {
 	if p.conn != nil {
+		// Check if the connection is still active
+		if err := p.conn.Ping(ctx); err != nil {
+			return nil, err
+		}
+
 		p.Log.Debugf("Reusing connection with PID: %v", p.conn.PgConn().PID())
 		return p.conn, nil
 	}
 
-	err := retry.Do(
-		func() error {
-			connTry, err := p.getConn(ctx, "localhost")
-			if err != nil {
-				return err
-			}
-
-			p.conn = connTry
-			return nil
-		},
-		retry.Attempts(retries),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return p.conn, nil
+	return p.connectWithRetry(ctx, "localhost", retries)
 }
 
-func (p *Postmaster) IsPostgresReady(ctx context.Context, hostname string) error {
-	var conn *pgx.Conn
-	err := retry.Do(
-		func() error {
-			connTry, err := p.getConn(ctx, hostname)
-			if err != nil {
-				return err
-			}
-			conn = connTry
-			return nil
-		},
-		retry.OnRetry(func(n uint, err error) {
-			p.Log.Debugf(
-				"postgres process at hostname %v not ready with error %v, retry: %v/%v",
-				hostname,
-				err,
-				n,
-				retry.DefaultAttempts,
-			)
-		}),
-	)
+func (p *Postmaster) BlockAndWaitForLeader(leaderHostname string) error {
+	err := retry.Do(func() error {
+		cmd := exec.Command(
+			"pg_isready",
+			"-h",
+			leaderHostname,
+		)
+		cmd.Env = os.Environ()
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("error from pg_isready: %v", err)
+		}
+		p.Log.Debugf("pg_isready: %s", out)
+
+		return nil
+	})
+
 	if err != nil {
 		return err
 	}
-
-	defer conn.Close(ctx)
 
 	return nil
 }
@@ -153,6 +181,14 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 }
 
 func (p *Postmaster) EmptyDataDir() error {
+	// https://superuser.com/questions/553045/fatal-lock-file-postmaster-pid-already-exists
+	if p.IsRunning() {
+		if err := p.Stop(); err != nil {
+			return err
+		}
+		p.pid = nil
+	}
+
 	dir, err := ioutil.ReadDir(p.DataDir)
 	if err != nil {
 		return err
@@ -200,7 +236,36 @@ func (p *Postmaster) deletePasswordFile(filename string) error {
 	return os.Remove(filename)
 }
 
-func (p *Postmaster) getConn(ctx context.Context, host string) (*pgx.Conn, error) {
+func (p *Postmaster) connectWithRetry(ctx context.Context, hostname string, retries uint) (*pgx.Conn, error) {
+	err := retry.Do(
+		func() error {
+			connTry, err := p.connect(ctx, hostname)
+			if err != nil {
+				return err
+			}
+
+			p.conn = connTry
+			return nil
+		},
+		retry.Attempts(retries),
+		retry.OnRetry(func(n uint, err error) {
+			p.Log.Debugf(
+				"postgres process at hostname %v not ready with error %v, retry: %v/%v",
+				hostname,
+				err,
+				n,
+				retry.DefaultAttempts,
+			)
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return p.conn, nil
+}
+
+func (p *Postmaster) connect(ctx context.Context, host string) (*pgx.Conn, error) {
 	connString := fmt.Sprintf(
 		"postgres://%v:%v@%v:5432/postgres",
 		p.AdminUsername,

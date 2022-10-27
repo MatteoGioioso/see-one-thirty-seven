@@ -52,6 +52,7 @@ services:
       LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
+    restart: always
 
   postgresql2:
     build:
@@ -68,6 +69,7 @@ services:
       LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
+    restart: always
 
 #  pgbench:
 #    build:

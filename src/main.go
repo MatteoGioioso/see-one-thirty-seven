@@ -76,9 +76,10 @@ func main() {
 		Postmaster: postmaster,
 		DcsClient:  dcsClient,
 		Log:        log,
+		Config:     daemon.Config{TickDuration: 10},
 	}
 
-	if err := d.Loop(ctx); err != nil {
+	if err := d.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
 }
