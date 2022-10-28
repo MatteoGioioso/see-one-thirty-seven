@@ -10,6 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 type Postmaster struct {
@@ -87,22 +90,6 @@ func (p *Postmaster) IsRunning() bool {
 	return p.isRunning()
 }
 
-func (p *Postmaster) isRunning() bool {
-	cmd := exec.Command(
-		"pg_isready",
-	)
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
-	out, err := cmd.Output()
-	if err != nil {
-		p.Log.Errorf("error from pg_isready: %v", err)
-		return false
-	}
-	p.Log.Debugf("pg_isready: %s", out)
-
-	return true
-}
-
 func (p *Postmaster) Promote() error {
 	cmd := exec.Command(
 		"pg_ctl",
@@ -113,9 +100,24 @@ func (p *Postmaster) Promote() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("pg_ctl error: %v", err)
 	}
 	return cmd.Process.Release()
+}
+
+func (p *Postmaster) IsInRecovery(ctx context.Context) (bool, error) {
+	conn, err := p.ConnectWithRetry(ctx, 2)
+	if err != nil {
+		p.Log.Errorf("could not connect to establish if postgres is in recovery")
+		return false, err
+	}
+	var isInRecovery bool
+	if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
+		p.Log.Errorf("could not execute query to establish if Postgres is in recovery, skipping: %v", err)
+		return false, nil
+	}
+
+	return isInRecovery, nil
 }
 
 func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
@@ -124,16 +126,28 @@ func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 
 func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.Conn, error) {
 	if p.conn != nil {
-		// Check if the connection is still active
+		// Check if the connection is still active and if not reconnect again
 		if err := p.conn.Ping(ctx); err != nil {
-			return nil, err
+			conn, err := p.connectWithRetry(ctx, "localhost", retries)
+			if err != nil {
+				return nil, err
+			}
+
+			p.conn = conn
+			return p.conn, nil
 		}
 
 		p.Log.Debugf("Reusing connection with PID: %v", p.conn.PgConn().PID())
 		return p.conn, nil
 	}
 
-	return p.connectWithRetry(ctx, "localhost", retries)
+	conn, err := p.connectWithRetry(ctx, "localhost", retries)
+	if err != nil {
+		return nil, err
+	}
+
+	p.conn = conn
+	return p.conn, nil
 }
 
 func (p *Postmaster) BlockAndWaitForLeader(leaderHostname string) error {
@@ -183,6 +197,20 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 func (p *Postmaster) EmptyDataDir() error {
 	// https://superuser.com/questions/553045/fatal-lock-file-postmaster-pid-already-exists
 	if p.IsRunning() {
+		// We cannot delete the data dir and having a postmaster process still running
+		pid, err := p.getPIDFromFile()
+		if err != nil {
+			return err
+		}
+
+		if *p.pid != pid {
+			return fmt.Errorf(
+				"the current registered pid (%v), is not the same as the one contained in postmaster.pid %v",
+				*p.pid,
+				pid,
+			)
+		}
+
 		if err := p.Stop(); err != nil {
 			return err
 		}
@@ -200,6 +228,24 @@ func (p *Postmaster) EmptyDataDir() error {
 	}
 
 	return nil
+}
+
+func (p *Postmaster) getPIDFromFile() (int, error) {
+	postmasterPidFile, err := ioutil.ReadFile(filepath.Join(p.DataDir, "postmaster.pid"))
+	if err != nil {
+		return 0, fmt.Errorf("could not read postmaster.pid file: %v", err)
+	}
+
+	// Check the layout of the postmaster.pid file
+	lines := strings.Split(string(postmasterPidFile), "\n")
+	pidStr := lines[0]
+
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return 0, fmt.Errorf("could not convert pid to integer: %v", err)
+	}
+
+	return pid, nil
 }
 
 func (p *Postmaster) makeBaseBackup(leaderHostname string) error {
@@ -229,6 +275,22 @@ func (p *Postmaster) makeBaseBackup(leaderHostname string) error {
 	return nil
 }
 
+func (p *Postmaster) isRunning() bool {
+	cmd := exec.Command(
+		"pg_isready",
+	)
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
+	out, err := cmd.Output()
+	if err != nil {
+		p.Log.Errorf("pg_isready: %v", err)
+		return false
+	}
+	p.Log.Debugf("pg_isready: %s", out)
+
+	return true
+}
+
 func (p *Postmaster) createPasswordFile(filename string) error {
 	return ioutil.WriteFile(filename, []byte(p.AdminPassword), 0700)
 }
@@ -237,6 +299,7 @@ func (p *Postmaster) deletePasswordFile(filename string) error {
 }
 
 func (p *Postmaster) connectWithRetry(ctx context.Context, hostname string, retries uint) (*pgx.Conn, error) {
+	var conn *pgx.Conn
 	err := retry.Do(
 		func() error {
 			connTry, err := p.connect(ctx, hostname)
@@ -244,7 +307,7 @@ func (p *Postmaster) connectWithRetry(ctx context.Context, hostname string, retr
 				return err
 			}
 
-			p.conn = connTry
+			conn = connTry
 			return nil
 		},
 		retry.Attempts(retries),
@@ -262,7 +325,7 @@ func (p *Postmaster) connectWithRetry(ctx context.Context, hostname string, retr
 		return nil, err
 	}
 
-	return p.conn, nil
+	return conn, nil
 }
 
 func (p *Postmaster) connect(ctx context.Context, host string) (*pgx.Conn, error) {

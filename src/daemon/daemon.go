@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/sirupsen/logrus"
@@ -58,34 +59,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}
 }
 
-func (d *Daemon) AmIReplica(ctx context.Context) bool {
-	if !d.Postmaster.IsRunning() {
-		d.Log.Warningf("postgres is not running therefore cannot be a replica")
-		return false
-	}
-
-	conn, err := d.Postmaster.ConnectWithRetry(ctx, 3)
-	if err == nil {
-		var isInRecovery bool
-		if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
-			d.Log.Errorf("could not execute query to establish if Postgres is in recovery, skipping: %v", err)
-			return false
-		}
-
-		return isInRecovery
-	} else {
-		d.Log.Errorf("could connect to establish if Postgres is in recovery, skipping: %v", err)
-		return false
-	}
-}
-
 func (d *Daemon) Leader(ctx context.Context) error {
-	if d.AmIReplica(ctx) {
-		if err := d.Postmaster.Promote(); err != nil {
-			return err
-		}
-	}
-
 	log := d.Log.WithField("role", postgresql.Leader)
 	d.PgConfig.SetRole(postgresql.Leader)
 	d.Postmaster.Log = log
@@ -95,8 +69,26 @@ func (d *Daemon) Leader(ctx context.Context) error {
 		return err
 	}
 
-	isRunning := d.Postmaster.IsRunning()
-	if isRunning {
+	if d.Postmaster.IsRunning() {
+		d.Log.Debugf("postgres is running, check if its role is consistent")
+
+		isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
+		if err != nil {
+			return nil
+		}
+
+		if isInRecovery {
+			d.Log.Warningf("current postgres is %v, possible failover, trying to promote this instance", postgresql.Replica)
+
+			if err := d.Postmaster.Promote(); err != nil {
+				return fmt.Errorf("could not promote postgres: %v", err)
+			}
+
+			d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
+			return nil
+		}
+
+		d.Log.Infof("postgres status is good")
 		return nil
 	}
 
@@ -105,8 +97,8 @@ func (d *Daemon) Leader(ctx context.Context) error {
 		return err
 	}
 
-	// isRunning here is most certainly false, I will leave it just to make it more readable
-	if isBootstrapped && !isRunning {
+	// isRunning here is most certainly false
+	if isBootstrapped {
 		if err := d.Postmaster.Start(); err != nil {
 			return err
 		}
