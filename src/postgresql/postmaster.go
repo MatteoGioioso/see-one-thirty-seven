@@ -6,6 +6,7 @@ import (
 	"github.com/avast/retry-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/sirupsen/logrus"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -106,7 +107,7 @@ func (p *Postmaster) Promote() error {
 }
 
 func (p *Postmaster) IsInRecovery(ctx context.Context) (bool, error) {
-	conn, err := p.ConnectWithRetry(ctx, 2)
+	conn, err := p.Connect(ctx)
 	if err != nil {
 		p.Log.Errorf("could not connect to establish if postgres is in recovery")
 		return false, err
@@ -118,6 +119,21 @@ func (p *Postmaster) IsInRecovery(ctx context.Context) (bool, error) {
 	}
 
 	return isInRecovery, nil
+}
+
+func (p *Postmaster) IsDataDirEmpty() (bool, error) {
+	f, err := os.Open(p.DataDir)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		return true, nil
+	}
+
+	return false, err // Either not empty or error, suits both cases
 }
 
 func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {

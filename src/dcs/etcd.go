@@ -78,16 +78,8 @@ func newEtcdImpl(endpoints []string, hostname string, instanceID string, lease i
 	}, nil
 }
 
-func (e *Etcd) GetRole(ctx context.Context) (string, error) {
-	leader, err := e.election.Leader(ctx)
-	if err != nil {
-		return "", err
-	}
-	if string(leader.Kvs[0].Value) == e.instanceID {
-		return postgresql.Leader, nil
-	} else {
-		return postgresql.Replica, nil
-	}
+func (e *Etcd) GetRoleWithRetries(ctx context.Context) (string, error) {
+	return e.getRoleWithRetries(ctx)
 }
 
 func (e *Etcd) StartElection(ctx context.Context) error {
@@ -133,26 +125,7 @@ func (e *Etcd) IsBootstrapped(ctx context.Context) (bool, error) {
 }
 
 func (e *Etcd) GetLeaderInfo(ctx context.Context) (InstanceInfo, error) {
-	var i InstanceInfo
-	err := retry.Do(
-		func() error {
-			iTry, err := e.getLeaderInfo(ctx)
-			if err != nil {
-				return err
-			}
-			i = iTry
-
-			return nil
-		},
-		retry.OnRetry(func(n uint, err error) {
-			e.Log.Debugf("leader not yet found in dcs, retry: %v/%v", n, retry.DefaultAttempts)
-		}),
-	)
-	if err != nil {
-		return InstanceInfo{}, err
-	}
-
-	return i, nil
+	return e.getLeaderInfo(ctx)
 }
 
 func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
@@ -162,7 +135,7 @@ func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 	}
 
 	leaderID := string(leader.Kvs[0].Value)
-	leaderInfo, err := e.getInstanceInfo(ctx, leaderID)
+	leaderInfo, err := e.getInstanceInfoWithRetry(ctx, leaderID)
 	if err != nil {
 		return InstanceInfo{}, err
 	}
@@ -224,6 +197,45 @@ func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (Instance
 	}
 
 	return i, nil
+}
+
+func (e *Etcd) getRoleWithRetries(ctx context.Context) (string, error) {
+	var role string
+	err := retry.Do(
+		func() error {
+			roleTry, err := e.getRole(ctx)
+			if err != nil {
+				return err
+			}
+			role = roleTry
+			return nil
+		},
+		retry.OnRetry(func(n uint, err error) {
+			e.Log.Debugf("could not get instance role from dcs: %v, retry: %v/%v", err, n, retry.DefaultAttempts)
+		}),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return role, nil
+}
+
+func (e *Etcd) getRole(ctx context.Context) (string, error) {
+	leader, err := e.election.Leader(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if len(leader.Kvs) == 0 {
+		return "", fmt.Errorf("leader is not yet present in dcs")
+	}
+
+	if string(leader.Kvs[0].Value) == e.instanceID {
+		return postgresql.Leader, nil
+	} else {
+		return postgresql.Replica, nil
+	}
 }
 
 func (e *Etcd) saveInstanceProp(ctx context.Context, prop, val string) error {

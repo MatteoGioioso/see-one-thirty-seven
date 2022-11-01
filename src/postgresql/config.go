@@ -47,22 +47,18 @@ func (c *Config) CreateConfig(leaderHostname string) error {
 	}
 
 	pgConf := bytes.NewBuffer(file)
-
 	// If we are using replication slots and the replica goes down for long time, the leader might accumulate an infinite
 	// amount of WAL files. To prevent this we set max_slot_wal_keep_size
 	pgConf.WriteString("max_slot_wal_keep_size = 40GB")
-
-	if c.role == Replica {
-		pgConf.WriteString("\n")
-		pgConf.WriteString(fmt.Sprintf(
-			"primary_conninfo = 'user=%v password=%v host=%v port=5432 sslmode=prefer sslcompression=0'",
-			c.ReplicationUsername,
-			c.ReplicationPassword,
-			leaderHostname,
-		))
-		pgConf.WriteString("\n")
-		pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", c.InstanceID))
-	}
+	pgConf.WriteString("\n")
+	pgConf.WriteString(fmt.Sprintf(
+		"primary_conninfo = 'user=%v password=%v host=%v port=5432 sslmode=prefer sslcompression=0'",
+		c.ReplicationUsername,
+		c.ReplicationPassword,
+		leaderHostname,
+	))
+	pgConf.WriteString("\n")
+	pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", c.InstanceID))
 
 	if err := ioutil.WriteFile(path.Join(c.DataDir, "postgresql.conf"), pgConf.Bytes(), 0700); err != nil {
 		return err

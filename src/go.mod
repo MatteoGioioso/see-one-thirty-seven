@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.1.2
 	github.com/jackc/pgx/v5 v5.0.1
 	github.com/sirupsen/logrus v1.9.0
+	github.com/sony/gobreaker v0.5.0
 	go.etcd.io/etcd/client/v3 v3.5.5
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 )

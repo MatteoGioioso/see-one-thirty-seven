@@ -4,14 +4,15 @@ import (
 	"context"
 	"github.com/MatteoGioioso/seeonethirtyseven/daemon"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
+	"github.com/MatteoGioioso/seeonethirtyseven/dcs_proxy"
 	"github.com/MatteoGioioso/seeonethirtyseven/logger"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/avast/retry-go"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"github.com/sony/gobreaker"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"strings"
-	"time"
 )
 
 var (
@@ -37,8 +38,6 @@ func main() {
 	log = log.WithField("instanceID", instanceID)
 	log.Println("Starting seeone")
 
-	retry.DefaultDelay = 2 * time.Second
-	retry.DefaultAttempts = 15
 	retry.DefaultOnRetry = func(n uint, err error) {
 		log.Debugf("%v, retrying: %v/%v", err, n, retry.DefaultAttempts)
 	}
@@ -67,6 +66,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	dcsProxy := dcs_proxy.ProxyImpl{
+		DcsClient:  dcsClient,
+		Postmaster: postmaster,
+		CB: gobreaker.NewCircuitBreaker(gobreaker.Settings{
+			Name: "DCS",
+		}),
+	}
+
 	if err := dcsClient.StartElection(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -75,6 +82,7 @@ func main() {
 		PgConfig:   pgConfig,
 		Postmaster: postmaster,
 		DcsClient:  dcsClient,
+		DcsProxy:   dcsProxy,
 		Log:        log,
 		Config:     daemon.Config{TickDuration: 10},
 	}
