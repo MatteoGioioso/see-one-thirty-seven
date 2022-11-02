@@ -10,7 +10,6 @@ import (
 	"github.com/avast/retry-go"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"github.com/sony/gobreaker"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"strings"
 )
@@ -66,22 +65,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	dcsProxy := dcs_proxy.ProxyImpl{
-		DcsClient:  dcsClient,
-		Postmaster: postmaster,
-		CB: gobreaker.NewCircuitBreaker(gobreaker.Settings{
-			Name: "DCS",
-		}),
-	}
-
-	if err := dcsClient.StartElection(ctx); err != nil {
+	dcsProxy := dcs_proxy.New(dcsClient, postmaster, log)
+	if err := dcsProxy.Connect(ctx); err != nil {
 		log.Fatal(err)
 	}
+
+	dcsProxy.StartElection(ctx)
 
 	d := daemon.Daemon{
 		PgConfig:   pgConfig,
 		Postmaster: postmaster,
-		DcsClient:  dcsClient,
 		DcsProxy:   dcsProxy,
 		Log:        log,
 		Config:     daemon.Config{TickDuration: 10},

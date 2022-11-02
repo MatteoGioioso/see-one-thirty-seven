@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
-	"github.com/avast/retry-go"
 	"github.com/sirupsen/logrus"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
@@ -30,61 +29,53 @@ type Etcd struct {
 	instanceID      string
 	hostname        string
 	lease           int
+	endpoints       []string
 }
 
 func NewEtcdImpl(endpoints []string, config Config, log *logrus.Entry) (*Etcd, error) {
-	var cli *Etcd
-	err := retry.Do(func() error {
-		impl, err := newEtcdImpl(endpoints, config.Hostname, config.InstanceID, config.Lease, log)
-		if err != nil {
-			return err
-		}
-
-		cli = impl
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return cli, nil
+	return newEtcdImpl(endpoints, config.Hostname, config.InstanceID, config.Lease, log)
 }
 
 func newEtcdImpl(endpoints []string, hostname string, instanceID string, lease int, log *logrus.Entry) (*Etcd, error) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: endpoints})
+	return &Etcd{
+		endpoints:  endpoints,
+		hostname:   hostname,
+		instanceID: instanceID,
+		lease:      lease,
+		Log:        log,
+	}, nil
+}
+
+func (e *Etcd) Connect(ctx context.Context) error {
+	cli, err := clientv3.New(clientv3.Config{Endpoints: e.endpoints})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	leaderSession, err := concurrency.NewSession(cli, concurrency.WithTTL(lease))
+	leaderSession, err := concurrency.NewSession(cli, concurrency.WithTTL(e.lease))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	instanceSession, err := concurrency.NewSession(cli, concurrency.WithTTL(3600))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &Etcd{
-		cli:             cli,
-		electionSession: leaderSession,
-		instanceSession: instanceSession,
-		election:        concurrency.NewElection(leaderSession, postgresql.LeaderElectionPrefix),
-		hostname:        hostname,
-		instanceID:      instanceID,
-		lease:           lease,
-		Log:             log,
-	}, nil
+	e.cli = cli
+	e.instanceSession = instanceSession
+	e.electionSession = leaderSession
+	e.election = concurrency.NewElection(leaderSession, postgresql.LeaderElectionPrefix)
+
+	return nil
 }
 
-func (e *Etcd) GetRoleWithRetries(ctx context.Context) (string, error) {
-	return e.getRoleWithRetries(ctx)
+func (e *Etcd) GetRole(ctx context.Context) (string, error) {
+	return e.getRole(ctx)
 }
 
 func (e *Etcd) StartElection(ctx context.Context) error {
-	go e.election.Campaign(ctx, e.instanceID)
-	return nil
+	return e.election.Campaign(ctx, e.instanceID)
 }
 
 func (e *Etcd) SyncInstanceInfo(ctx context.Context, role string) error {
@@ -135,7 +126,7 @@ func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 	}
 
 	leaderID := string(leader.Kvs[0].Value)
-	leaderInfo, err := e.getInstanceInfoWithRetry(ctx, leaderID)
+	leaderInfo, err := e.getInstanceInfo(ctx, leaderID)
 	if err != nil {
 		return InstanceInfo{}, err
 	}
@@ -144,30 +135,7 @@ func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 }
 
 func (e *Etcd) GetInstanceInfo(ctx context.Context) (InstanceInfo, error) {
-	return e.getInstanceInfoWithRetry(ctx, e.instanceID)
-}
-
-func (e *Etcd) getInstanceInfoWithRetry(ctx context.Context, instanceID string) (InstanceInfo, error) {
-	var i InstanceInfo
-	err := retry.Do(
-		func() error {
-			iTry, err := e.getInstanceInfo(ctx, instanceID)
-			if err != nil {
-				return err
-			}
-			i = iTry
-
-			return nil
-		},
-		retry.OnRetry(func(n uint, err error) {
-			e.Log.Warningf("instance info not yet found in dcs, retry: %v", n)
-		}),
-	)
-	if err != nil {
-		return InstanceInfo{}, err
-	}
-
-	return i, nil
+	return e.getInstanceInfo(ctx, e.instanceID)
 }
 
 func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (InstanceInfo, error) {
@@ -197,28 +165,6 @@ func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (Instance
 	}
 
 	return i, nil
-}
-
-func (e *Etcd) getRoleWithRetries(ctx context.Context) (string, error) {
-	var role string
-	err := retry.Do(
-		func() error {
-			roleTry, err := e.getRole(ctx)
-			if err != nil {
-				return err
-			}
-			role = roleTry
-			return nil
-		},
-		retry.OnRetry(func(n uint, err error) {
-			e.Log.Debugf("could not get instance role from dcs: %v, retry: %v/%v", err, n, retry.DefaultAttempts)
-		}),
-	)
-	if err != nil {
-		return "", err
-	}
-
-	return role, nil
 }
 
 func (e *Etcd) getRole(ctx context.Context) (string, error) {

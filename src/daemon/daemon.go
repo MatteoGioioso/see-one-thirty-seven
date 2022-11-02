@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs_proxy"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/sirupsen/logrus"
@@ -17,7 +16,6 @@ type Config struct {
 type Daemon struct {
 	PgConfig   postgresql.Config
 	Postmaster postgresql.Postmaster
-	DcsClient  *dcs.Etcd
 	DcsProxy   dcs_proxy.ProxyImpl
 	Log        *logrus.Entry
 	Config
@@ -35,97 +33,93 @@ func (d *Daemon) Start(ctx context.Context) error {
 				return err
 			}
 
+			if role == postgresql.Leader {
+				if err := d.LeaderFunc(ctx); err != nil {
+					return err
+				}
+			}
+
+			if role == postgresql.Replica {
+				if err := d.ReplicaFunc(ctx); err != nil {
+					return err
+				}
+			}
+
 			d.Log.Infof("I am the %v", role)
 			if err := d.DcsProxy.SyncInstanceInfo(ctx, role); err != nil {
 				d.Log.Errorf("Could not sync instance info: %v", err)
 			}
-
-			if role == postgresql.Leader {
-				if err := d.Leader(ctx); err != nil {
-					return err
-				}
-
-				continue
-			}
-
-			if role == postgresql.Replica {
-				if err := d.Replica(ctx); err != nil {
-					return err
-				}
-			}
 		}
 	}
 }
 
-func (d *Daemon) Leader(ctx context.Context) error {
+func (d *Daemon) LeaderFunc(ctx context.Context) error {
 	log := d.Log.WithField("role", postgresql.Leader)
 	d.PgConfig.SetRole(postgresql.Leader)
 	d.Postmaster.Log = log
-	d.DcsClient.Log = log
-
-	if d.Postmaster.IsRunning() {
-		d.Log.Debugf("postgres is running, check if its role is consistent")
-
-		isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
-		if err != nil {
-			return nil
-		}
-
-		if isInRecovery {
-			d.Log.Warningf("current postgres is %v, possible failover, trying to promote this instance", postgresql.Replica)
-
-			if err := d.Postmaster.Promote(); err != nil {
-				return fmt.Errorf("could not promote postgres: %v", err)
-			}
-
-			d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
-			return nil
-		}
-
-		d.Log.Infof("postgres status is good")
-		return nil
-	}
 
 	isDataDirEmpty, err := d.Postmaster.IsDataDirEmpty()
 	if err != nil {
 		return err
 	}
 
-	// isRunning here is most certainly false
 	if !isDataDirEmpty {
+		if d.Postmaster.IsRunning() {
+			d.Log.Debugf("postgres is running, check if its role is consistent")
+
+			isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
+			if err != nil {
+				return err
+			}
+
+			if !isInRecovery {
+				return nil
+			}
+
+			if isInRecovery {
+				d.Log.Warningf(
+					"current postgres is in recovery, but is supposed to be the %v, possible failover, trying to promote this instance",
+					postgresql.Leader,
+				)
+
+				if err := d.Postmaster.Promote(); err != nil {
+					return fmt.Errorf("could not promote postgres: %v", err)
+				}
+
+				d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
+				return nil
+			}
+
+			d.Log.Infof("postgres status is good")
+		} else {
+			if err := d.Postmaster.Start(); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	} else {
+		if err := d.BootstrapLeader(ctx); err != nil {
+			return err
+		}
+
 		if err := d.Postmaster.Start(); err != nil {
 			return err
 		}
 
-		return nil
-	}
+		connect, err := d.Postmaster.Connect(ctx)
+		if err != nil {
+			return err
+		}
 
-	log.Infof("bootstrapping")
-	if err := d.BootstrapLeader(ctx); err != nil {
-		return err
+		return d.PgConfig.SetupReplication(ctx, connect)
 	}
-
-	if err := d.DcsClient.SetBootstrapped(ctx); err != nil {
-		return err
-	}
-
-	if err := d.Postmaster.Start(); err != nil {
-		return err
-	}
-
-	connect, err := d.Postmaster.Connect(ctx)
-	if err != nil {
-		return err
-	}
-
-	return d.PgConfig.SetupReplication(ctx, connect)
 }
 
-func (d *Daemon) Replica(ctx context.Context) error {
+func (d *Daemon) ReplicaFunc(ctx context.Context) error {
 	log := d.Log.WithField("role", postgresql.Replica)
 	d.PgConfig.SetRole(postgresql.Replica)
 	d.Postmaster.Log = log
-	d.DcsClient.Log = log
 
 	isDataDirEmpty, err := d.Postmaster.IsDataDirEmpty()
 	if err != nil {
@@ -133,10 +127,33 @@ func (d *Daemon) Replica(ctx context.Context) error {
 	}
 
 	if !isDataDirEmpty {
-		return nil
-	}
+		if d.Postmaster.IsRunning() {
+			d.Log.Debugf("postgres is running, check if its role is consistent")
 
-	leaderInfo, err := d.DcsClient.GetLeaderInfo(ctx)
+			isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
+			if err != nil {
+				return err
+			}
+
+			if isInRecovery {
+				return nil
+			} else {
+				if err := d.Postmaster.Stop(); err != nil {
+					return err
+				}
+
+				return d.bootstrapAndStartReplica(ctx)
+			}
+		} else {
+			return d.bootstrapAndStartReplica(ctx)
+		}
+	} else {
+		return d.bootstrapAndStartReplica(ctx)
+	}
+}
+
+func (d *Daemon) bootstrapAndStartReplica(ctx context.Context) error {
+	leaderInfo, err := d.DcsProxy.GetLeaderInfo(ctx)
 	if err != nil {
 		return err
 	}
@@ -149,14 +166,9 @@ func (d *Daemon) Replica(ctx context.Context) error {
 		return err
 	}
 
-	if err := d.DcsClient.SetBootstrapped(ctx); err != nil {
-		return err
-	}
-
 	if err := d.Postmaster.Start(); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -190,17 +202,4 @@ func (d *Daemon) BootstrapReplica(ctx context.Context, leaderHostname string) er
 	}
 
 	return nil
-}
-
-func (d *Daemon) IsBootstrappedAndRunning(ctx context.Context) (bool, error) {
-	isBootstrapped, err := d.DcsClient.IsBootstrapped(ctx)
-	if err != nil {
-		return false, err
-	}
-
-	if isBootstrapped && d.Postmaster.IsRunning() {
-		return true, nil
-	}
-
-	return false, nil
 }

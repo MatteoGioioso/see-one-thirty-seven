@@ -177,9 +177,10 @@ func (p *Postmaster) BlockAndWaitForLeader(leaderHostname string) error {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
 		out, err := cmd.Output()
 		if err != nil {
-			return fmt.Errorf("error from pg_isready: %v", err)
+			return fmt.Errorf("postgres at host %v is not ready with error: %v", leaderHostname, err)
 		}
 		p.Log.Debugf("pg_isready: %s", out)
+		p.Log.Infof("postgres at host %v, is ready", leaderHostname)
 
 		return nil
 	})
