@@ -8,5 +8,5 @@ import "context"
 
 type Proxy interface {
 	GetRole(ctx context.Context) (string, error)
-	SyncInstanceInfo(ctx context.Context, role string) error
+	SaveInstanceInfo(ctx context.Context, role string) error
 }

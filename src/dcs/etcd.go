@@ -78,7 +78,7 @@ func (e *Etcd) StartElection(ctx context.Context) error {
 	return e.election.Campaign(ctx, e.instanceID)
 }
 
-func (e *Etcd) SyncInstanceInfo(ctx context.Context, role string) error {
+func (e *Etcd) SaveInstanceInfo(ctx context.Context, role string) error {
 	if err := e.saveInstanceProp(ctx, hostnameKey, e.hostname); err != nil {
 		return err
 	}
@@ -88,31 +88,6 @@ func (e *Etcd) SyncInstanceInfo(ctx context.Context, role string) error {
 	}
 
 	return nil
-}
-
-func (e *Etcd) SetBootstrapped(ctx context.Context) error {
-	if err := e.saveInstanceProp(ctx, bootstrapKey, "1"); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (e *Etcd) IsBootstrapped(ctx context.Context) (bool, error) {
-	getResponse, err := e.instanceSession.Client().Get(ctx, e.getInstanceProKey(bootstrapKey))
-	if err != nil {
-		return false, err
-	}
-
-	if len(getResponse.Kvs) == 0 {
-		return false, nil
-	}
-
-	if string(getResponse.Kvs[0].Value) == "1" {
-		return true, nil
-	} else {
-		return false, nil
-	}
 }
 
 func (e *Etcd) GetLeaderInfo(ctx context.Context) (InstanceInfo, error) {
@@ -136,6 +111,25 @@ func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 
 func (e *Etcd) GetInstanceInfo(ctx context.Context) (InstanceInfo, error) {
 	return e.getInstanceInfo(ctx, e.instanceID)
+}
+
+func (e *Etcd) GetClusterInstancesInfo(ctx context.Context) ([]InstanceInfo, error) {
+	electionResponse, err := e.electionSession.Client().Get(ctx, postgresql.LeaderElectionPrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
+	}
+
+	instances := make([]InstanceInfo, 0)
+	for _, kv := range electionResponse.Kvs {
+		instanceInfo, err := e.getInstanceInfo(ctx, string(kv.Value))
+		if err != nil {
+			return nil, err
+		}
+
+		instances = append(instances, instanceInfo)
+	}
+
+	return instances, nil
 }
 
 func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (InstanceInfo, error) {

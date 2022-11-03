@@ -24,6 +24,11 @@ type Postmaster struct {
 	pid  *int
 }
 
+func NewPostmaster(config Config, log *logrus.Entry) Postmaster {
+	logWithField := log.WithField("subcomponent", "postgres")
+	return Postmaster{Config: config, Log: logWithField}
+}
+
 func (p *Postmaster) Init() error {
 	pwFile := path.Join(p.ExtraDir, "password", "pw")
 	if err := p.createPasswordFile(pwFile); err != nil {
@@ -69,6 +74,7 @@ func (p *Postmaster) Start() error {
 }
 
 func (p *Postmaster) Stop() error {
+	// TODO add timeout and kill if necessary
 	cmd := exec.Command(
 		"pg_ctl",
 		"-D",
@@ -138,6 +144,10 @@ func (p *Postmaster) IsDataDirEmpty() (bool, error) {
 
 func (p *Postmaster) Connect(ctx context.Context) (*pgx.Conn, error) {
 	return p.ConnectWithRetry(ctx, retry.DefaultAttempts)
+}
+
+func (p *Postmaster) ConnectTo(ctx context.Context, hostname string) (*pgx.Conn, error) {
+	return p.connectWithRetry(ctx, hostname, retry.DefaultAttempts)
 }
 
 func (p *Postmaster) ConnectWithRetry(ctx context.Context, retries uint) (*pgx.Conn, error) {
@@ -212,15 +222,19 @@ func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 }
 
 func (p *Postmaster) EmptyDataDir() error {
+	p.Log.Debugf("emptying data directory")
 	// https://superuser.com/questions/553045/fatal-lock-file-postmaster-pid-already-exists
+	// Sanity check as wee cannot delete the data dir and having a postmaster process still running,
+	// we may risk data corruption
 	if p.IsRunning() {
-		// We cannot delete the data dir and having a postmaster process still running
+		p.Log.Debugf("postgres is still running while trying to empty the data directory: proceeding with stopping the process")
 		pid, err := p.getPIDFromFile()
 		if err != nil {
 			return err
 		}
 
 		if *p.pid != pid {
+			// TODO instead of crashing we could directly Kill both PIDs
 			return fmt.Errorf(
 				"the current registered pid (%v), is not the same as the one contained in postmaster.pid %v",
 				*p.pid,
@@ -228,6 +242,7 @@ func (p *Postmaster) EmptyDataDir() error {
 			)
 		}
 
+		p.Log.Debugf("stopping postgres PID %v, before empty data directory", pid)
 		if err := p.Stop(); err != nil {
 			return err
 		}
@@ -243,6 +258,7 @@ func (p *Postmaster) EmptyDataDir() error {
 			return err
 		}
 	}
+	p.Log.Debugf("postgres data directory was emptied successfully")
 
 	return nil
 }

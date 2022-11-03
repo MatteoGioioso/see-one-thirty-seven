@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/MatteoGioioso/seeonethirtyseven/api"
 	"github.com/MatteoGioioso/seeonethirtyseven/daemon"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs"
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs_proxy"
@@ -50,7 +51,7 @@ func main() {
 		AdminPassword:       *pgPassword,
 	}
 
-	postmaster := postgresql.Postmaster{Config: pgConfig, Log: log}
+	postmaster := postgresql.NewPostmaster(pgConfig, log)
 
 	dcsClient, err := dcs.NewEtcdImpl(
 		strings.Split(*etcdCluster, " "),
@@ -72,6 +73,13 @@ func main() {
 
 	dcsProxy.StartElection(ctx)
 
+	a := api.Api{
+		Postmaster: postmaster,
+		DcsProxy:   dcsProxy,
+		Log:        log,
+		Config:     api.Config{Port: "8080"},
+	}
+
 	d := daemon.Daemon{
 		PgConfig:   pgConfig,
 		Postmaster: postmaster,
@@ -79,6 +87,8 @@ func main() {
 		Log:        log,
 		Config:     daemon.Config{TickDuration: 10},
 	}
+
+	go a.Start(ctx)
 
 	if err := d.Start(ctx); err != nil {
 		log.Fatal(err)

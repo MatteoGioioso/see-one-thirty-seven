@@ -31,6 +31,17 @@ func New(dcsClient *dcs.Etcd, postmaster postgresql.Postmaster, log *logrus.Entr
 }
 
 func (p *ProxyImpl) Connect(ctx context.Context) error {
+	p.cb = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name: "DCS",
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			// When the DCS network connection is re-established it is necessary to start a new election,
+			// as the old one won't be running anymore
+			if from == gobreaker.StateHalfOpen && to == gobreaker.StateClosed {
+				go p.dcsClient.StartElection(ctx)
+			}
+		},
+	})
+
 	_, err := p.cb.Execute(func() (interface{}, error) {
 		return nil, retry.Do(
 			func() error {
@@ -41,17 +52,6 @@ func (p *ProxyImpl) Connect(ctx context.Context) error {
 				p.log.Debugf("unable to connect to dcs: %v, retrying: %v/%v", err, n, 5)
 			}),
 		)
-	})
-
-	p.cb = gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name: "DCS",
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			// When the DCS network connection is re-established it is necessary to start a new election,
-			// as the old one won't be running anymore
-			if from == gobreaker.StateHalfOpen && to == gobreaker.StateClosed {
-				go p.dcsClient.StartElection(ctx)
-			}
-		},
 	})
 
 	return err
@@ -80,6 +80,7 @@ func (p *ProxyImpl) GetRole(ctx context.Context) (string, error) {
 		p.log.Warningf("could not get role from dcs: %v", err)
 		// If we fail after the retries, we can assume that we lost network connection with the DCS, or it is crashed.
 		if !p.postmaster.IsRunning() {
+			// TODO add possibility to start as replica
 			return "", ErrCouldNotEstablishRole
 		}
 
@@ -123,9 +124,9 @@ func (p *ProxyImpl) GetLeaderInfo(ctx context.Context) (dcs.InstanceInfo, error)
 	return instanceInfo, err
 }
 
-func (p *ProxyImpl) SyncInstanceInfo(ctx context.Context, role string) error {
+func (p *ProxyImpl) SaveInstanceInfo(ctx context.Context, role string) error {
 	_, err := p.cb.Execute(func() (interface{}, error) {
-		return nil, p.dcsClient.SyncInstanceInfo(ctx, role)
+		return nil, p.dcsClient.SaveInstanceInfo(ctx, role)
 	})
 
 	return err
@@ -133,4 +134,8 @@ func (p *ProxyImpl) SyncInstanceInfo(ctx context.Context, role string) error {
 
 func (p *ProxyImpl) IsRoleConsistent(ctx context.Context) (bool, error) {
 	return false, nil
+}
+
+func (p *ProxyImpl) GetClusterInstances(ctx context.Context) ([]dcs.InstanceInfo, error) {
+	return p.dcsClient.GetClusterInstancesInfo(ctx)
 }
