@@ -132,8 +132,17 @@ func (p *ProxyImpl) SaveInstanceInfo(ctx context.Context, role string) error {
 	return err
 }
 
-func (p *ProxyImpl) IsRoleConsistent(ctx context.Context) (bool, error) {
-	return false, nil
+func (p *ProxyImpl) Promote(ctx context.Context, instanceID string) error {
+	go func() {
+		if err := p.dcsClient.Promote(ctx, instanceID); err != nil {
+			p.log.Errorf("could not run campaign: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (p *ProxyImpl) Resign(ctx context.Context) error {
+	return p.dcsClient.Demote(ctx)
 }
 
 func (p *ProxyImpl) GetClusterInstances(ctx context.Context) ([]dcs.InstanceInfo, error) {

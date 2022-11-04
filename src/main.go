@@ -77,7 +77,7 @@ func main() {
 		Postmaster: postmaster,
 		DcsProxy:   dcsProxy,
 		Log:        log,
-		Config:     api.Config{Port: "8080"},
+		Config:     api.Config{Port: "8080", InstanceID: instanceID.String()},
 	}
 
 	d := daemon.Daemon{

@@ -132,6 +132,33 @@ func (e *Etcd) GetClusterInstancesInfo(ctx context.Context) ([]InstanceInfo, err
 	return instances, nil
 }
 
+func (e *Etcd) Promote(ctx context.Context, candidateInstanceID string) error {
+	response, err := e.electionSession.Client().Get(ctx, postgresql.LeaderElectionPrefix, clientv3.WithPrefix())
+	if err != nil {
+		return err
+	}
+
+	candidateKey := ""
+	for _, i := range response.Kvs {
+		if string(i.Value) == candidateInstanceID {
+			candidateKey = string(i.Key)
+			break
+		}
+	}
+
+	e.election = concurrency.ResumeElection(
+		e.electionSession,
+		postgresql.LeaderElectionPrefix,
+		candidateKey,
+		e.election.Rev()+1,
+	)
+	return e.election.Proclaim(ctx, candidateInstanceID)
+}
+
+func (e *Etcd) Demote(ctx context.Context) error {
+	return e.election.Resign(ctx)
+}
+
 func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (InstanceInfo, error) {
 	response, err := e.instanceSession.Client().Get(
 		ctx,

@@ -11,7 +11,8 @@ import (
 )
 
 type Config struct {
-	Port string
+	Port       string
+	InstanceID string
 }
 
 type Api struct {
@@ -27,9 +28,20 @@ func (s *Api) Start(ctx context.Context) {
 	s.Log = s.Log.WithField("subcomponent", "api")
 	s.Log.Infof("starting seeone api")
 
-	r.GET("/switchover", func(c *gin.Context) {
+	r.GET("/switchover/:instance-id", func(c *gin.Context) {
+		instanceID := c.Param("instance-id")
+		if err := s.DcsProxy.Resign(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := s.DcsProxy.Promote(ctx, instanceID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"message": "pong",
+			"message": fmt.Sprintf("instance %v promoted", instanceID),
 		})
 	})
 

@@ -21,7 +21,7 @@ type Postmaster struct {
 	Log *logrus.Entry
 
 	conn *pgx.Conn
-	pid  *int
+	pid  int
 }
 
 func NewPostmaster(config Config, log *logrus.Entry) Postmaster {
@@ -67,8 +67,8 @@ func (p *Postmaster) Start() error {
 		return err
 	}
 
-	p.pid = &cmd.Process.Pid
-	p.Log.Infof("starting postgres process PID: %v", *p.pid)
+	p.pid = cmd.Process.Pid
+	p.Log.Infof("starting postgres process PID: %v", p.pid)
 
 	return cmd.Process.Release()
 }
@@ -78,7 +78,7 @@ func (p *Postmaster) Stop() error {
 	cmd := exec.Command(
 		"pg_ctl",
 		"-D",
-		fmt.Sprintf(`"%v"`, p.DataDir),
+		fmt.Sprintf(`%v`, p.DataDir),
 		"stop",
 		"-m",
 		"smart",
@@ -86,9 +86,11 @@ func (p *Postmaster) Stop() error {
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Run(); err != nil {
 		return err
 	}
+
+	p.pid = 0
 
 	return nil
 }
@@ -233,11 +235,11 @@ func (p *Postmaster) EmptyDataDir() error {
 			return err
 		}
 
-		if *p.pid != pid {
+		if p.pid != pid {
 			// TODO instead of crashing we could directly Kill both PIDs
 			return fmt.Errorf(
 				"the current registered pid (%v), is not the same as the one contained in postmaster.pid %v",
-				*p.pid,
+				p.pid,
 				pid,
 			)
 		}
@@ -246,7 +248,6 @@ func (p *Postmaster) EmptyDataDir() error {
 		if err := p.Stop(); err != nil {
 			return err
 		}
-		p.pid = nil
 	}
 
 	dir, err := ioutil.ReadDir(p.DataDir)
