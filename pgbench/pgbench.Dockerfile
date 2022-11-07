@@ -1,6 +1,6 @@
 FROM postgres:13
 
-COPY bench.sh /bench.sh
-RUN chmod +x /bench.sh
+COPY bin/bench /bench
+RUN chmod +x /bench
 
-ENTRYPOINT ["/bench.sh"]
+ENTRYPOINT ["/bench"]

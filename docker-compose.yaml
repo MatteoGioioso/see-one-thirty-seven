@@ -9,6 +9,13 @@ x-etcd-variables: &etcd-variables
   ETCD_INITIAL_CLUSTER: ${NAME_1}=http://${HOST_1}:2380,${NAME_2}=http://${HOST_2}:2380,${NAME_3}=http://${HOST_3}:2380
   ETCD_INITIAL_CLUSTER_STATE: new
 
+x-postgres-variables: &postgres-variables
+  PGPASSWORD: admin
+  PGUSER: postgres
+  PGREPLICATION_PASSWORD: replicator
+  ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
+  LOG_LEVEL: debug
+
 services:
   etcd1:
     image: quay.io/coreos/etcd
@@ -45,12 +52,8 @@ services:
       - "5432:5432"
       - "8080:8080"
     environment:
-      PGPASSWORD: admin
-      PGUSER: postgres
-      PGREPLICATION_PASSWORD: replicator
+      <<: *postgres-variables
       HOSTNAME: postgresql
-      ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
-      LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
     restart: always
@@ -63,26 +66,34 @@ services:
       - "5001:5432"
       - "8081:8080"
     environment:
-      PGPASSWORD: admin
-      PGUSER: postgres
-      PGREPLICATION_PASSWORD: replicator
+      <<: *postgres-variables
       HOSTNAME: postgresql2
-      ETCD_CLUSTER: "${HOST_1}:2181 ${HOST_2}:2181 ${HOST_3}:2181"
-      LOG_LEVEL: debug
     volumes:
       - /usr/local/pgsql/data
     restart: always
 
-#  pgbench:
-#    build:
-#      dockerfile: pgbench.Dockerfile
-#      context: ../bench
-#    restart: always # Run continuously
-#    environment:
-#      - PGHOST_1=postgresql
-#      - PGHOST_2=postgresql2
-#      - PGUSER=postgres
-#      - PGPASSWORD=admin
-#      - PGDATABASE=postgres
-#    depends_on:
-#      - postgresql
+  postgresql3:
+    build:
+      dockerfile: Dockerfile
+      context: .
+    ports:
+      - "5002:5432"
+      - "8082:8080"
+    environment:
+      <<: *postgres-variables
+      HOSTNAME: postgresql3
+    volumes:
+      - /usr/local/pgsql/data
+    restart: always
+
+  pgbench:
+    build:
+      dockerfile: pgbench.Dockerfile
+      context: pgbench/
+    restart: always # Run continuously
+    environment:
+      <<: *postgres-variables
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
