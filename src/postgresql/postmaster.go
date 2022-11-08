@@ -204,6 +204,7 @@ func (p *Postmaster) BlockAndWaitForLeader(leaderHostname string) error {
 	return nil
 }
 
+// MakeBaseBackup TODO possibly move this to it's own class: in the future we could use something like wal-g
 func (p *Postmaster) MakeBaseBackup(leaderHostname string) error {
 	if err := retry.Do(
 		func() error {

@@ -36,6 +36,7 @@ func (p *ProxyImpl) Connect(ctx context.Context) error {
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			// When the DCS network connection is re-established it is necessary to start a new election,
 			// as the old one won't be running anymore
+			// TODO check is this can cause split-brain
 			if from == gobreaker.StateHalfOpen && to == gobreaker.StateClosed {
 				go p.dcsClient.StartElection(ctx)
 			}

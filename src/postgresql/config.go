@@ -58,7 +58,7 @@ func (c *Config) CreateConfig(leaderHostname string) error {
 		leaderHostname,
 	))
 	pgConf.WriteString("\n")
-	pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", c.InstanceID))
+	pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", ReplicationSlot))
 
 	if err := ioutil.WriteFile(path.Join(c.DataDir, "postgresql.conf"), pgConf.Bytes(), 0700); err != nil {
 		return err
@@ -79,12 +79,12 @@ func (c *Config) SetupReplication(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
-	//if _, err := conn.Exec(
-	//	ctx,
-	//	fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", c.InstanceID),
-	//); err != nil {
-	//	return err
-	//}
+	if _, err := conn.Exec(
+		ctx,
+		fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", ReplicationSlot),
+	); err != nil {
+		return err
+	}
 
 	return nil
 }

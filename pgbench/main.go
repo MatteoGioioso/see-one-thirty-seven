@@ -49,7 +49,7 @@ func main() {
 
 	var leaderHostname string
 	if err := retry.Do(func() error {
-		fmt.Printf("%+v\n", instancesInfo)
+		log.Printf("Finding the leader")
 		for _, info := range instancesInfo {
 			connString := fmt.Sprintf(
 				"postgres://%v:%v@%v:5432/postgres",
@@ -66,8 +66,9 @@ func main() {
 			if err := conn.QueryRow(ctx, "select pg_is_in_recovery()").Scan(&isInRecovery); err != nil {
 				return err
 			}
-			log.Printf("instance id %v with host %v, recovery is %v", info.ID, info.Hostname, isInRecovery)
+
 			if !isInRecovery {
+				log.Printf("instance id %v with host %v, is the leader", info.ID, info.Hostname)
 				leaderHostname = info.Hostname
 				return nil
 			}
@@ -80,6 +81,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Printf("Setting up pgbench")
 	setupPgbenchCmd := exec.Command(
 		"pgbench",
 		"-i",
@@ -94,6 +96,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Printf("Starting up pgbench")
 	startPgbenchCmd := exec.Command(
 		"pgbench",
 		"-c",

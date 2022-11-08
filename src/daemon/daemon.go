@@ -64,51 +64,7 @@ func (d *Daemon) LeaderFunc(ctx context.Context) error {
 		return err
 	}
 
-	if !isDataDirEmpty {
-		if d.Postmaster.IsRunning() {
-			d.Log.Debugf("postgres is running, check if its role is consistent")
-
-			isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
-			if err != nil {
-				return err
-			}
-
-			if !isInRecovery {
-				d.Log.Debugf("postgres status is good: running as leader")
-				return nil
-			} else {
-				d.Log.Warningf(
-					"current postgres is in recovery, but is supposed to be the %v, possible failover, trying to promote this instance",
-					postgresql.Leader,
-				)
-
-				// Before promoting we MUST make sure that there is no other postgres process running in non-recovery mode present in the cluster
-				isThereOrphanLeader, err := d.IsThereOrphanLeader(ctx)
-				if err != nil {
-					return fmt.Errorf("could not establish if there are orphan leader in the cluster: %v", err)
-				}
-
-				if isThereOrphanLeader {
-					d.Log.Errorf("an orphan leader was found, we cannot promote the current instance")
-					return nil
-				}
-
-				if err := d.Postmaster.Promote(); err != nil {
-					return fmt.Errorf("could not promote postgres: %v", err)
-				}
-
-				d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
-				return nil
-			}
-		} else {
-			d.Log.Debugf("postgres is not running: trying to start")
-			if err := d.Postmaster.Start(); err != nil {
-				return err
-			}
-
-			return nil
-		}
-	} else {
+	if isDataDirEmpty {
 		if err := d.BootstrapLeader(ctx); err != nil {
 			return err
 		}
@@ -123,6 +79,49 @@ func (d *Daemon) LeaderFunc(ctx context.Context) error {
 		}
 
 		return d.PgConfig.SetupReplication(ctx, connect)
+	} else if d.Postmaster.IsRunning() {
+		d.Log.Debugf("postgres is running, check if its role is consistent")
+
+		isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
+		if err != nil {
+			return err
+		}
+
+		if isInRecovery {
+			d.Log.Warningf(
+				"current postgres is in recovery, but is supposed to be the %v, possible failover, trying to promote this instance",
+				postgresql.Leader,
+			)
+
+			// Before promoting we MUST make sure that there is no other postgres process running in non-recovery mode present in the cluster
+			isThereOrphanLeader, err := d.IsThereOrphanLeader(ctx)
+			if err != nil {
+				return fmt.Errorf("could not establish if there are orphan leader in the cluster: %v", err)
+			}
+
+			if isThereOrphanLeader {
+				d.Log.Errorf("an orphan leader was found, we cannot promote the current instance")
+				return nil
+			}
+
+			if err := d.Postmaster.Promote(); err != nil {
+				return fmt.Errorf("could not promote postgres: %v", err)
+			}
+
+			d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
+			return nil
+		} else {
+			d.Log.Debugf("postgres status is good: running as leader")
+			return nil
+		}
+	} else {
+		// Postgres is not running but the data directory is not empty
+		d.Log.Debugf("postgres is not running: trying to start")
+		if err := d.Postmaster.Start(); err != nil {
+			return err
+		}
+
+		return nil
 	}
 }
 
@@ -136,31 +135,36 @@ func (d *Daemon) ReplicaFunc(ctx context.Context) error {
 		return err
 	}
 
-	if !isDataDirEmpty {
-		if d.Postmaster.IsRunning() {
-			d.Log.Debugf("postgres is running, check if its role is consistent")
+	if isDataDirEmpty {
+		d.Log.Debugf("postgres data directory is empty")
+		return d.bootstrapAndStartReplica(ctx)
+	} else if d.Postmaster.IsRunning() {
+		d.Log.Debugf("postgres is running, check if its role is consistent")
 
-			isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
-			if err != nil {
+		isInRecovery, err := d.Postmaster.IsInRecovery(ctx)
+		if err != nil {
+			return err
+		}
+
+		if isInRecovery {
+			d.Log.Debugf("postgres status is good: running and in recovery mode")
+			return nil
+		} else {
+			// TODO if we find ourself in this situation we could possibly have a temporary split brain (crash, kill or smart shutdown?)
+			// If we arrive at this point it means that postgres should be running as a replica, but instead is accepting
+			// update/insert transaction. This is highly unlikely though: the method IsThereOrphanLeader will shield us
+			// from such a case.
+			// I will still keep this just in case
+			d.Log.Errorf("postgres is running not in recovery mode, but it is supposed to be a replica, POSSIBLE CORRUPTION: stopping")
+			if err := d.Postmaster.Stop(); err != nil {
 				return err
 			}
 
-			if isInRecovery {
-				d.Log.Debugf("postgres status is good: running and in recovery mode")
-				return nil
-			} else {
-				// TODO if we find ourself in this situation we could possibly have a temporary split brain
-				d.Log.Errorf("postgres is running not in recovery mode, but it is supposed to be a replica, POSSIBLE CORRUPTION: stopping")
-				if err := d.Postmaster.Stop(); err != nil {
-					return err
-				}
-
-				return d.bootstrapAndStartReplica(ctx)
-			}
-		} else {
 			return d.bootstrapAndStartReplica(ctx)
 		}
 	} else {
+		// If postgres is not running but the data directory is not empty, we cannot risk to start the process
+		// because it might NOT be in recovery mode, therefore we proceed to empty the data folder and make a base backup
 		return d.bootstrapAndStartReplica(ctx)
 	}
 }

@@ -5,4 +5,5 @@ const (
 	Replica              = "replica"
 	LeaderElectionPrefix = "/postgresql-leader"
 	InstanceInfoPrefix   = "/postgresql-info"
+	ReplicationSlot      = "replication"
 )
