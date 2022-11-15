@@ -75,6 +75,7 @@ func (p *Postmaster) Start() error {
 
 func (p *Postmaster) Stop(mode string) error {
 	// TODO add timeout and kill if necessary
+	p.Log.Infof("Stopping postgres pid: %v", p.pid)
 	cmd := exec.Command(
 		"pg_ctl",
 		"-D",
@@ -89,6 +90,7 @@ func (p *Postmaster) Stop(mode string) error {
 	if err := cmd.Run(); err != nil {
 		return err
 	}
+	p.Log.Infof("Postgres stopped pid: %v", p.pid)
 
 	p.pid = 0
 

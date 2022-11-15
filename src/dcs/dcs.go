@@ -15,7 +15,8 @@ type DCS interface {
 	GetLeaderInfo(ctx context.Context) (InstanceInfo, error)
 	GetClusterInstancesInfo(ctx context.Context) ([]InstanceInfo, error)
 	Promote(ctx context.Context, candidateInstanceID string) error
-	Shutdown(ctx context.Context) error
+	Demote(ctx context.Context) error
+	Disconnect() error
 }
 
 type InstanceInfo struct {

@@ -133,12 +133,15 @@ func (e *Etcd) Promote(ctx context.Context, candidateInstanceID string) error {
 	return err
 }
 
-func (e *Etcd) Shutdown(ctx context.Context) error {
+func (e *Etcd) Demote(ctx context.Context) error {
 	e.Log.Debugf("resign leadership")
 	if err := e.election.Resign(ctx); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (e *Etcd) Disconnect() error {
 	e.Log.Debugf("closing leader and instance sessions")
 	if err := e.electionSession.Close(); err != nil {
 		return err

@@ -119,7 +119,6 @@ func (p *ProxyImpl) GetLeaderInfo(ctx context.Context) (dcs.InstanceInfo, error)
 				instanceInfo = leaderInfoTry
 				return err
 			},
-			retry.Attempts(5),
 			retry.OnRetry(func(n uint, err error) {
 				p.log.Debugf("unable to get leader info from dcs: %v, retrying: %v/%v", err, n, 5)
 			}),
@@ -134,6 +133,7 @@ func (p *ProxyImpl) SaveInstanceInfo(ctx context.Context, role string) error {
 		return nil, p.dcsClient.SaveInstanceInfo(ctx, role)
 	})
 
+	p.log.Debugf("instance info saved")
 	return err
 }
 
@@ -145,6 +145,10 @@ func (p *ProxyImpl) GetClusterInstances(ctx context.Context) ([]dcs.InstanceInfo
 	return p.dcsClient.GetClusterInstancesInfo(ctx)
 }
 
-func (p *ProxyImpl) Shutdown(ctx context.Context) error {
-	return p.dcsClient.Shutdown(ctx)
+func (p *ProxyImpl) Disconnect() error {
+	return p.dcsClient.Disconnect()
+}
+
+func (p *ProxyImpl) Demote(ctx context.Context) error {
+	return p.dcsClient.Demote(ctx)
 }

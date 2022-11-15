@@ -57,16 +57,6 @@ func (s *Api) Start(ctx context.Context) {
 			s.QuitChan <- 0
 		}()
 
-		if err := s.Postmaster.Stop(postgresql.StopModeFast); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		if err := s.DcsProxy.Shutdown(ctx); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
 		c.JSON(http.StatusOK, gin.H{
 			"message": fmt.Sprintf("node is shutting down"),
 		})

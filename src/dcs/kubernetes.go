@@ -111,6 +111,10 @@ func (k *Kubernetes) Promote(ctx context.Context, candidateInstanceID string) er
 	panic("implement me")
 }
 
-func (k *Kubernetes) Shutdown(ctx context.Context) error {
+func (k *Kubernetes) Disconnect() error {
+	panic("implement me")
+}
+
+func (k *Kubernetes) Demote(ctx context.Context) error {
 	panic("implement me")
 }

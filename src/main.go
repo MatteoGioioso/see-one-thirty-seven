@@ -14,7 +14,6 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
 	"strings"
-	"time"
 )
 
 var (
@@ -90,17 +89,32 @@ func main() {
 	}
 
 	go a.Start(ctx)
-	go d.Start(ctx)
+	go func() {
+		if err := d.Start(ctx); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	<-quit
-	log.Infof("Shutdown...")
+	log.Infof("Initiating shutting down sequence...")
+
+	if err := dcsProxy.Demote(ctx); err != nil {
+		log.Errorf("could close demote instance: %v", err)
+	}
 
 	cancel()
 
 	select {
 	case <-ctx.Done():
-		time.Sleep(5 * time.Second)
-		log.Infof("Seeone exiting...")
+		if err := postmaster.Stop(postgresql.StopModeFast); err != nil {
+			log.Errorf("could not stop postgres: %v", err)
+		}
+
+		if err := dcsProxy.Disconnect(); err != nil {
+			log.Errorf("could disconnect from dcs: %v", err)
+		}
+
+		log.Infof("Seeone exiting...See you!")
 		os.Exit(0)
 	}
 }
