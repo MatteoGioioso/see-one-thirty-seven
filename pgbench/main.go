@@ -21,14 +21,11 @@ var (
 
 func main() {
 	kingpin.Parse()
-	etcd, err := dcs.NewEtcdImpl(
+	etcd := dcs.NewEtcdImpl(
 		strings.Split(*etcdCluster, " "),
 		dcs.Config{},
 		nil,
 	)
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	ctx := context.Background()
 

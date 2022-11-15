@@ -73,7 +73,7 @@ func (p *Postmaster) Start() error {
 	return cmd.Process.Release()
 }
 
-func (p *Postmaster) Stop() error {
+func (p *Postmaster) Stop(mode string) error {
 	// TODO add timeout and kill if necessary
 	cmd := exec.Command(
 		"pg_ctl",
@@ -81,7 +81,7 @@ func (p *Postmaster) Stop() error {
 		fmt.Sprintf(`%v`, p.DataDir),
 		"stop",
 		"-m",
-		"smart",
+		mode,
 	)
 
 	cmd.Stdout = os.Stdout
@@ -112,6 +112,22 @@ func (p *Postmaster) Promote() error {
 		return fmt.Errorf("pg_ctl error: %v", err)
 	}
 	return cmd.Process.Release()
+}
+
+func (p *Postmaster) SyncData(leaderHostname string) error {
+	cmd := exec.Command(
+		"pg_rewind",
+		fmt.Sprintf(`--source-server="host=%v port=%v dbname="`),
+		fmt.Sprintf(`--target-pgdata=%v`, p.DataDir),
+	)
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p *Postmaster) IsInRecovery(ctx context.Context) (bool, error) {
@@ -192,7 +208,7 @@ func (p *Postmaster) BlockAndWaitForLeader(leaderHostname string) error {
 			return fmt.Errorf("postgres at host %v is not ready with error: %v", leaderHostname, err)
 		}
 		p.Log.Debugf("pg_isready: %s", out)
-		p.Log.Infof("postgres at host %v, is ready", leaderHostname)
+		p.Log.Infof("postgres leader at host %v, is ready", leaderHostname)
 
 		return nil
 	})
@@ -246,7 +262,7 @@ func (p *Postmaster) EmptyDataDir() error {
 		}
 
 		p.Log.Debugf("stopping postgres PID %v, before empty data directory", pid)
-		if err := p.Stop(); err != nil {
+		if err := p.Stop(StopModeFast); err != nil {
 			return err
 		}
 	}

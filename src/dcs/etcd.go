@@ -8,15 +8,10 @@ import (
 	"fmt"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/sirupsen/logrus"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"strings"
-)
-
-const (
-	hostnameKey  = "hostname"
-	roleKey      = "role"
-	bootstrapKey = "bootstrap"
 )
 
 type Etcd struct {
@@ -32,18 +27,18 @@ type Etcd struct {
 	endpoints       []string
 }
 
-func NewEtcdImpl(endpoints []string, config Config, log *logrus.Entry) (*Etcd, error) {
+func NewEtcdImpl(endpoints []string, config Config, log *logrus.Entry) *Etcd {
 	return newEtcdImpl(endpoints, config.Hostname, config.InstanceID, config.Lease, log)
 }
 
-func newEtcdImpl(endpoints []string, hostname string, instanceID string, lease int, log *logrus.Entry) (*Etcd, error) {
+func newEtcdImpl(endpoints []string, hostname string, instanceID string, lease int, log *logrus.Entry) *Etcd {
 	return &Etcd{
 		endpoints:  endpoints,
 		hostname:   hostname,
 		instanceID: instanceID,
 		lease:      lease,
 		Log:        log,
-	}, nil
+	}
 }
 
 func (e *Etcd) Connect(ctx context.Context) error {
@@ -94,25 +89,6 @@ func (e *Etcd) GetLeaderInfo(ctx context.Context) (InstanceInfo, error) {
 	return e.getLeaderInfo(ctx)
 }
 
-func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
-	leader, err := e.election.Leader(ctx)
-	if err != nil {
-		return InstanceInfo{}, err
-	}
-
-	leaderID := string(leader.Kvs[0].Value)
-	leaderInfo, err := e.getInstanceInfo(ctx, leaderID)
-	if err != nil {
-		return InstanceInfo{}, err
-	}
-
-	return leaderInfo, nil
-}
-
-func (e *Etcd) GetInstanceInfo(ctx context.Context) (InstanceInfo, error) {
-	return e.getInstanceInfo(ctx, e.instanceID)
-}
-
 func (e *Etcd) GetClusterInstancesInfo(ctx context.Context) ([]InstanceInfo, error) {
 	electionResponse, err := e.electionSession.Client().Get(ctx, postgresql.LeaderElectionPrefix, clientv3.WithPrefix())
 	if err != nil {
@@ -138,25 +114,61 @@ func (e *Etcd) Promote(ctx context.Context, candidateInstanceID string) error {
 		return err
 	}
 
-	candidateKey := ""
+	var candidate *mvccpb.KeyValue
 	for _, i := range response.Kvs {
 		if string(i.Value) == candidateInstanceID {
-			candidateKey = string(i.Key)
+			candidate = i
 			break
 		}
 	}
 
-	e.election = concurrency.ResumeElection(
-		e.electionSession,
-		postgresql.LeaderElectionPrefix,
-		candidateKey,
-		e.election.Rev()+1,
+	e.Log.Infof("candidate: %+v", candidate)
+	// TODO: promote logic
+	// Apparently at the moment there is promotion logic in the election API
+	_, err = e.electionSession.Client().Put(
+		ctx,
+		string(candidate.Key),
+		candidateInstanceID,
 	)
-	return e.election.Proclaim(ctx, candidateInstanceID)
+	return err
 }
 
-func (e *Etcd) Demote(ctx context.Context) error {
-	return e.election.Resign(ctx)
+func (e *Etcd) Shutdown(ctx context.Context) error {
+	e.Log.Debugf("resign leadership")
+	if err := e.election.Resign(ctx); err != nil {
+		return err
+	}
+
+	e.Log.Debugf("closing leader and instance sessions")
+	if err := e.electionSession.Close(); err != nil {
+		return err
+	}
+
+	if err := e.instanceSession.Close(); err != nil {
+		return err
+	}
+
+	e.Log.Debugf("closing ectd client connection")
+	if err := e.cli.Close(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (e *Etcd) getLeaderInfo(ctx context.Context) (InstanceInfo, error) {
+	leader, err := e.election.Leader(ctx)
+	if err != nil {
+		return InstanceInfo{}, err
+	}
+
+	leaderID := string(leader.Kvs[0].Value)
+	leaderInfo, err := e.getInstanceInfo(ctx, leaderID)
+	if err != nil {
+		return InstanceInfo{}, err
+	}
+
+	return leaderInfo, nil
 }
 
 func (e *Etcd) getInstanceInfo(ctx context.Context, instanceID string) (InstanceInfo, error) {

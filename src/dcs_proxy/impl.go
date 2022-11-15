@@ -10,19 +10,23 @@ import (
 	"github.com/sony/gobreaker"
 )
 
+// NOTE: this will only work if we modify /go.etcd.io/etcd/client/v3@v3.5.5/options.go
+// defaultWaitForReady = grpc.WaitForReady(false) => the default if true, it will wait and block our loop until the dcs comes back online
+// defaultUnaryMaxRetries uint = 0 => the default is 100, bring it to 0 to control ourselves the retries
+
 var (
 	ErrLeaderWithoutDCS      = fmt.Errorf("postgres is currently acting as a leader, but dcs is faulty")
 	ErrCouldNotEstablishRole = fmt.Errorf("could not establish role, either dcs is not reachable or postgres is not running")
 )
 
 type ProxyImpl struct {
-	dcsClient  *dcs.Etcd
+	dcsClient  dcs.DCS
 	postmaster postgresql.Postmaster
 	cb         *gobreaker.CircuitBreaker
 	log        *logrus.Entry
 }
 
-func New(dcsClient *dcs.Etcd, postmaster postgresql.Postmaster, log *logrus.Entry) ProxyImpl {
+func New(dcsClient dcs.DCS, postmaster postgresql.Postmaster, log *logrus.Entry) ProxyImpl {
 	return ProxyImpl{
 		dcsClient:  dcsClient,
 		postmaster: postmaster,
@@ -134,18 +138,13 @@ func (p *ProxyImpl) SaveInstanceInfo(ctx context.Context, role string) error {
 }
 
 func (p *ProxyImpl) Promote(ctx context.Context, instanceID string) error {
-	go func() {
-		if err := p.dcsClient.Promote(ctx, instanceID); err != nil {
-			p.log.Errorf("could not run campaign: %v", err)
-		}
-	}()
-	return nil
-}
-
-func (p *ProxyImpl) Resign(ctx context.Context) error {
-	return p.dcsClient.Demote(ctx)
+	return p.dcsClient.Promote(ctx, instanceID)
 }
 
 func (p *ProxyImpl) GetClusterInstances(ctx context.Context) ([]dcs.InstanceInfo, error) {
 	return p.dcsClient.GetClusterInstancesInfo(ctx)
+}
+
+func (p *ProxyImpl) Shutdown(ctx context.Context) error {
+	return p.dcsClient.Shutdown(ctx)
 }

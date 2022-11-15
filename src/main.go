@@ -12,7 +12,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"os"
 	"strings"
+	"time"
 )
 
 var (
@@ -32,7 +34,8 @@ var (
 func main() {
 	kingpin.Parse()
 
-	ctx := context.Background()
+	quit := make(chan int)
+	ctx, cancel := context.WithCancel(context.Background())
 	instanceID := uuid.New()
 	log = logger.NewDefaultLogger(*logLevel, "seeone")
 	log = log.WithField("instanceID", instanceID)
@@ -53,7 +56,7 @@ func main() {
 
 	postmaster := postgresql.NewPostmaster(pgConfig, log)
 
-	dcsClient, err := dcs.NewEtcdImpl(
+	factory := dcs.NewFactory(
 		strings.Split(*etcdCluster, " "),
 		dcs.Config{
 			Hostname:   *hostname,
@@ -62,10 +65,7 @@ func main() {
 		},
 		log,
 	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
+	dcsClient := factory.Get("etcd")
 	dcsProxy := dcs_proxy.New(dcsClient, postmaster, log)
 	if err := dcsProxy.Connect(ctx); err != nil {
 		log.Fatal(err)
@@ -78,6 +78,7 @@ func main() {
 		DcsProxy:   dcsProxy,
 		Log:        log,
 		Config:     api.Config{Port: "8080", InstanceID: instanceID.String()},
+		QuitChan:   quit,
 	}
 
 	d := daemon.Daemon{
@@ -89,8 +90,17 @@ func main() {
 	}
 
 	go a.Start(ctx)
+	go d.Start(ctx)
 
-	if err := d.Start(ctx); err != nil {
-		log.Fatal(err)
+	<-quit
+	log.Infof("Shutdown...")
+
+	cancel()
+
+	select {
+	case <-ctx.Done():
+		time.Sleep(5 * time.Second)
+		log.Infof("Seeone exiting...")
+		os.Exit(0)
 	}
 }

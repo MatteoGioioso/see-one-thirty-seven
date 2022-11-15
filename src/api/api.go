@@ -19,6 +19,7 @@ type Api struct {
 	Postmaster postgresql.Postmaster
 	DcsProxy   dcs_proxy.ProxyImpl
 	Log        *logrus.Entry
+	QuitChan   chan int
 	Config
 }
 
@@ -30,11 +31,6 @@ func (s *Api) Start(ctx context.Context) {
 
 	r.GET("/switchover/:instance-id", func(c *gin.Context) {
 		instanceID := c.Param("instance-id")
-		if err := s.DcsProxy.Resign(ctx); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
 		if err := s.DcsProxy.Promote(ctx, instanceID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -42,6 +38,37 @@ func (s *Api) Start(ctx context.Context) {
 
 		c.JSON(http.StatusOK, gin.H{
 			"message": fmt.Sprintf("instance %v promoted", instanceID),
+		})
+	})
+
+	r.GET("/stop", func(c *gin.Context) {
+		if err := s.Postmaster.Stop(postgresql.StopModeSmart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": fmt.Sprintf("postgres process has been stopped"),
+		})
+	})
+
+	r.GET("/shutdown", func(c *gin.Context) {
+		defer func() {
+			s.QuitChan <- 0
+		}()
+
+		if err := s.Postmaster.Stop(postgresql.StopModeFast); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := s.DcsProxy.Shutdown(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": fmt.Sprintf("node is shutting down"),
 		})
 	})
 

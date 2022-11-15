@@ -25,6 +25,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	tick := time.NewTicker(time.Duration(d.TickDuration) * time.Second)
 	defer tick.Stop()
 
+loop:
 	for {
 		select {
 		case <-tick.C:
@@ -50,8 +51,14 @@ func (d *Daemon) Start(ctx context.Context) error {
 			if err := d.DcsProxy.SaveInstanceInfo(ctx, role); err != nil {
 				d.Log.Errorf("Could not sync instance info: %v", err)
 			}
+		case <-ctx.Done():
+			d.Log.Infof("Stopping daemon loop")
+			tick.Stop()
+			break loop
 		}
 	}
+
+	return nil
 }
 
 func (d *Daemon) LeaderFunc(ctx context.Context) error {
@@ -156,7 +163,7 @@ func (d *Daemon) ReplicaFunc(ctx context.Context) error {
 			// from such a case.
 			// I will still keep this just in case
 			d.Log.Errorf("postgres is running not in recovery mode, but it is supposed to be a replica, POSSIBLE CORRUPTION: stopping")
-			if err := d.Postmaster.Stop(); err != nil {
+			if err := d.Postmaster.Stop(postgresql.StopModeFast); err != nil {
 				return err
 			}
 
@@ -186,6 +193,9 @@ func (d *Daemon) bootstrapAndStartReplica(ctx context.Context) error {
 	if err := d.Postmaster.Start(); err != nil {
 		return err
 	}
+
+	// TODO wait for it to be ready, or it will cause race condition
+
 	return nil
 }
 
