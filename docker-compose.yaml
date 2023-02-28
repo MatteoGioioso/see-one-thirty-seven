@@ -18,6 +18,7 @@ x-postgres-variables: &postgres-variables
 
 services:
   etcd1:
+    container_name: etcd1
     image: quay.io/coreos/etcd
     hostname: etcd1
     environment:
@@ -27,6 +28,7 @@ services:
       ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_1}:2181
 
   etcd2:
+    container_name: etcd2
     image: quay.io/coreos/etcd
     hostname: etcd2
     environment:
@@ -36,6 +38,7 @@ services:
       ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_2}:2181
 
   etcd3:
+    container_name: etcd3
     image: quay.io/coreos/etcd
     hostname: etcd3
     environment:
@@ -45,46 +48,49 @@ services:
       ETCD_ADVERTISE_CLIENT_URLS: http://${HOST_3}:2181
 
   postgresql:
+    container_name: node_1
     build:
       dockerfile: Dockerfile
       context: .
     ports:
       - "5432:5432"
-      - "8080:8080"
+      - "8085:8080"
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql
     volumes:
       - /usr/local/pgsql/data
-    restart: always
+    restart: on-failure
 
   postgresql2:
+    container_name: node_2
     build:
       dockerfile: Dockerfile
       context: .
     ports:
       - "5001:5432"
-      - "8081:8080"
+      - "8086:8080"
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql2
     volumes:
       - /usr/local/pgsql/data
-    restart: always
+    restart: on-failure
 
   postgresql3:
+    container_name: node_3
     build:
       dockerfile: Dockerfile
       context: .
     ports:
       - "5002:5432"
-      - "8082:8080"
+      - "8087:8080"
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql3
     volumes:
       - /usr/local/pgsql/data
-    restart: always
+    restart: on-failure
 
   pgbench:
     build:

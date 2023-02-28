@@ -118,7 +118,7 @@ func (d *Daemon) LeaderFunc(ctx context.Context) error {
 			d.Log.Infof("postgres was promoted to %v", postgresql.Leader)
 			return nil
 		} else {
-			d.Log.Debugf("postgres status is good: running as leader")
+			d.Log.Debugf("postgres status is good: running as %v", postgresql.Leader)
 			return nil
 		}
 	} else {

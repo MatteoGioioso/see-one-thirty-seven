@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	extraFolder             = kingpin.Flag("pgextra", "folder for other stuff").Required().Envar("PGEXTRA").String()
+	extraFolder             = kingpin.Flag("pgextra", "folder additional config").Required().Envar("PGEXTRA").String()
 	pgDataFolder            = kingpin.Flag("pgdata", "postgres main data folder").Required().Envar("PGDATA").String()
 	pgPassword              = kingpin.Flag("pgpassword", "").Required().Envar("PGPASSWORD").String()
 	pgUser                  = kingpin.Flag("pguser", "").Default("postgres").Envar("PGUSER").String()
@@ -99,7 +99,7 @@ func main() {
 	log.Infof("Initiating shutting down sequence...")
 
 	if err := dcsProxy.Demote(ctx); err != nil {
-		log.Errorf("could close demote instance: %v", err)
+		log.Errorf("could not demote instance: %v", err)
 	}
 
 	cancel()
