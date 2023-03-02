@@ -6,6 +6,7 @@ import (
 	"github.com/MatteoGioioso/seeonethirtyseven/dcs_proxy"
 	"github.com/MatteoGioioso/seeonethirtyseven/postgresql"
 	"github.com/sirupsen/logrus"
+	"os"
 	"time"
 )
 
@@ -85,7 +86,7 @@ func (d *Daemon) LeaderFunc(ctx context.Context) error {
 			return err
 		}
 
-		return d.PgConfig.SetupReplication(ctx, connect)
+		return d.PgConfig.CreateReplicationUser(ctx, connect)
 	} else if d.Postmaster.IsRunning() {
 		d.Log.Debugf("postgres is running, check if its role is consistent")
 
@@ -179,24 +180,31 @@ func (d *Daemon) ReplicaFunc(ctx context.Context) error {
 func (d *Daemon) bootstrapAndStartReplica(ctx context.Context) error {
 	leaderInfo, err := d.DcsProxy.GetLeaderInfo(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not GetLeaderInfo: %v", err)
 	}
 
 	if err := d.Postmaster.BlockAndWaitForLeader(leaderInfo.Hostname); err != nil {
-		return err
+		return fmt.Errorf("could not BlockAndWaitForLeader: %v", err)
+	}
+
+	conn, err := d.Postmaster.ConnectTo(ctx, leaderInfo.Hostname)
+	if err != nil {
+		return fmt.Errorf("could not ConnectTo leader at host %v: %v", leaderInfo.Hostname, err)
+	}
+
+	if err := d.PgConfig.CreateReplicationSlot(ctx, conn, os.Getenv("HOSTNAME")); err != nil {
+		return fmt.Errorf("could not CreateReplicationSlot: %v", err)
 	}
 
 	if err := d.BootstrapReplica(ctx, leaderInfo.Hostname); err != nil {
-		return err
+		return fmt.Errorf("could not BootstrapReplica: %v", err)
 	}
 
 	if err := d.Postmaster.Start(); err != nil {
-		return err
+		return fmt.Errorf("could not Start postgres process: %v", err)
 	}
 
-	// TODO wait for it to be ready, or it will cause race condition
-
-	return nil
+	return d.Postmaster.WaitForStart()
 }
 
 func (d *Daemon) BootstrapLeader(ctx context.Context) error {

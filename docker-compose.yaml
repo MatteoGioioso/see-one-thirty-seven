@@ -58,8 +58,6 @@ services:
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql
-    volumes:
-      - /usr/local/pgsql/data
     restart: on-failure
 
   postgresql2:
@@ -73,8 +71,6 @@ services:
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql2
-    volumes:
-      - /usr/local/pgsql/data
     restart: on-failure
 
   postgresql3:
@@ -88,8 +84,6 @@ services:
     environment:
       <<: *postgres-variables
       HOSTNAME: postgresql3
-    volumes:
-      - /usr/local/pgsql/data
     restart: on-failure
 
   pgbench:

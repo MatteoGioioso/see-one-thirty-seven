@@ -51,6 +51,7 @@ func main() {
 		ReplicationPassword: *replicationUserPassword,
 		AdminUsername:       *pgUser,
 		AdminPassword:       *pgPassword,
+		InstanceID:          instanceID.String(),
 	}
 
 	postmaster := postgresql.NewPostmaster(pgConfig, log)

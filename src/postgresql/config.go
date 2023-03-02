@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"io/ioutil"
+	"os"
 	"path"
 )
 
@@ -58,7 +59,7 @@ func (c *Config) CreateConfig(leaderHostname string) error {
 		leaderHostname,
 	))
 	pgConf.WriteString("\n")
-	pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", ReplicationSlot))
+	pgConf.WriteString(fmt.Sprintf("primary_slot_name = '%v'", os.Getenv("HOSTNAME")))
 
 	if err := ioutil.WriteFile(path.Join(c.DataDir, "postgresql.conf"), pgConf.Bytes(), 0700); err != nil {
 		return err
@@ -67,7 +68,7 @@ func (c *Config) CreateConfig(leaderHostname string) error {
 	return nil
 }
 
-func (c *Config) SetupReplication(ctx context.Context, conn *pgx.Conn) error {
+func (c *Config) CreateReplicationUser(ctx context.Context, conn *pgx.Conn) error {
 	if _, err := conn.Exec(
 		ctx,
 		fmt.Sprintf(
@@ -79,11 +80,24 @@ func (c *Config) SetupReplication(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
+	return nil
+}
+
+func (c *Config) CreateReplicationSlot(ctx context.Context, conn *pgx.Conn, slotName string) error {
+	var exists bool
+	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_replication_slots where slot_name= $1)", slotName).Scan(&exists); err != nil {
+		return err
+	}
+
+	if exists {
+		return nil
+	}
+
 	if _, err := conn.Exec(
 		ctx,
-		fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", ReplicationSlot),
+		fmt.Sprintf("SELECT pg_create_physical_replication_slot('%v')", slotName),
 	); err != nil {
-		return err
+		return fmt.Errorf("could not create replication slot: %v", err)
 	}
 
 	return nil

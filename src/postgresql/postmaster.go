@@ -271,7 +271,7 @@ func (p *Postmaster) EmptyDataDir() error {
 
 	dir, err := ioutil.ReadDir(p.DataDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not open %v: %v", p.DataDir, err)
 	}
 	for _, d := range dir {
 		if err := os.RemoveAll(path.Join([]string{p.DataDir, d.Name()}...)); err != nil {
@@ -281,6 +281,26 @@ func (p *Postmaster) EmptyDataDir() error {
 	p.Log.Debugf("postgres data directory was emptied successfully")
 
 	return nil
+}
+
+func (p *Postmaster) WaitForStart() error {
+	return retry.Do(
+		func() error {
+			if p.isRunning() {
+				return nil
+			}
+
+			return fmt.Errorf("postgres is not started")
+		},
+		retry.Attempts(10),
+		retry.OnRetry(func(n uint, err error) {
+			p.Log.Debugf(
+				"waiting for postgres to start: %v/%v",
+				n,
+				retry.DefaultAttempts,
+			)
+		}),
+	)
 }
 
 func (p *Postmaster) getPIDFromFile() (int, error) {
@@ -334,12 +354,12 @@ func (p *Postmaster) isRunning() bool {
 	)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, fmt.Sprintf("PGPASSWORD=%v", p.AdminPassword))
-	out, err := cmd.Output()
+	err := cmd.Run()
 	if err != nil {
 		p.Log.Errorf("pg_isready: %v", err)
 		return false
 	}
-	p.Log.Debugf("pg_isready: %s", out)
+	p.Log.Debugf("pg_isready")
 
 	return true
 }
